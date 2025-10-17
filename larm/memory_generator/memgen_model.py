@@ -335,6 +335,24 @@ class LatentMemoryModel(BaseModel):
         assert self.model.device == self.weaver.device == self.trigger.device
         return self.model.device
     
+    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
+        """Enable gradient checkpointing for the model."""
+        if hasattr(self.model, 'gradient_checkpointing_enable'):
+            self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs)
+        if hasattr(self.weaver, 'gradient_checkpointing_enable'):
+            self.weaver.gradient_checkpointing_enable(gradient_checkpointing_kwargs)
+        if hasattr(self.trigger, 'gradient_checkpointing_enable'):
+            self.trigger.gradient_checkpointing_enable(gradient_checkpointing_kwargs)
+    
+    def gradient_checkpointing_disable(self):
+        """Disable gradient checkpointing for the model."""
+        if hasattr(self.model, 'gradient_checkpointing_disable'):
+            self.model.gradient_checkpointing_disable()
+        if hasattr(self.weaver, 'gradient_checkpointing_disable'):
+            self.weaver.gradient_checkpointing_disable()
+        if hasattr(self.trigger, 'gradient_checkpointing_disable'):
+            self.trigger.gradient_checkpointing_disable()
+    
     def _forward(
         self, 
         input_ids: torch.Tensor,
