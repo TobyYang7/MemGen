@@ -353,6 +353,11 @@ class LatentMemoryModel(BaseModel):
         if hasattr(self.trigger, 'gradient_checkpointing_disable'):
             self.trigger.gradient_checkpointing_disable()
     
+    @property
+    def is_gradient_checkpointing(self):
+        """Check if gradient checkpointing is enabled."""
+        return getattr(self.model, 'is_gradient_checkpointing', False)
+    
     def _forward(
         self, 
         input_ids: torch.Tensor,
