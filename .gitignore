@@ -1,0 +1,15 @@
+test_output/
+data/*
+**.pyc
+**.pyo
+**.pyd
+**.pyw
+**.pyz
+**.pywz
+**.pyzw
+**.pyzwz
+**.pyzwzw
+**.pyzwzwzw
+
+model/
+results/

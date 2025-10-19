@@ -38,7 +38,7 @@ INFERENCE_LATENTS_LEN=8
 LOAD_WEAVER_PATH=null
 
 # train
-python -m accelerate.commands.launch \
+uv run python -m accelerate.commands.launch \
     --config_file=configs/zero2.yaml \
     main.py \
     --cfg-path configs/latent_memory/${DATASET_NAME}.yaml \

@@ -1,0 +1,47 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "MemGen Training (GSM8K)",
+            "type": "python",
+            "request": "launch",
+            "module": "accelerate.commands.launch",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "env": {
+                "DEBUG_MODE": "true",
+                "LOG_PATH": "./test_output/debug_log_gsm8k.txt",
+                "CUDA_VISIBLE_DEVICES": "0",
+                "MAIN_PROCESS_PORT": "29507",
+                "NCCL_DEBUG": "INFO",
+                "NCCL_IB_DISABLE": "1",
+                "NCCL_P2P_DISABLE": "1",
+                "NCCL_ASYNC_DISABLE": "1"
+            },
+            "args": [
+                "--config_file=configs/zero2.yaml",
+                "main.py",
+                "--cfg-path", "configs/latent_memory/gsm8k.yaml",
+                "--options",
+                "model.reasoner_model_name", "Qwen/Qwen2.5-1.5B-Instruct",
+                "model.weaver.weaver_model_name", "Qwen/Qwen2.5-1.5B-Instruct",
+                "model.trigger.trigger_model_name", "null",
+                "model.weaver.prompt_latents_len", "8",
+                "model.weaver.inference_latents_len", "8",
+                "model.max_prompt_aug_num", "1",
+                "model.max_inference_aug_num", "5",
+                "model.load_model_path", "null",
+                "datasets.gsm8k.mode", "sft",
+                "run.mode", "train",
+                "run.train_weaver", "True",
+                "run.train_trigger", "False",
+                "run.train_weaver_method", "sft",
+                "run.generation.do_sample", "True",
+                "run.generation.temperature", "1.0",
+                "run.generation.max_response_length", "512",
+                "run.output_dir", "${workspaceFolder}/test_output/gsm8k"
+            ]
+        }
+    ]
+}
