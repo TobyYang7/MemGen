@@ -249,9 +249,15 @@ class LatentMemoryModel(BaseModel):
                     reasoner_model_name, torch_dtype=torch.bfloat16
                 )
                 vlm_loaded = True
-        # tokenizer/processor: use AutoProcessor for VLMs
+        # tokenizer/processor: use AutoProcessor for VLMs, but always expose a real tokenizer via self.tokenizer
+        self.processor = None
         if vlm_loaded:
-            self.tokenizer = AutoProcessor.from_pretrained(reasoner_model_name)
+            self.processor = AutoProcessor.from_pretrained(reasoner_model_name)
+            # Prefer the underlying tokenizer from the processor if available
+            if hasattr(self.processor, "tokenizer") and self.processor.tokenizer is not None:
+                self.tokenizer = self.processor.tokenizer
+            else:
+                self.tokenizer = AutoTokenizer.from_pretrained(reasoner_model_name)
         else:
             self.tokenizer = AutoTokenizer.from_pretrained(reasoner_model_name)
         self.config = self.model.config
@@ -342,8 +348,8 @@ class LatentMemoryModel(BaseModel):
         self.weaver = self.weaver.bfloat16()
         self.trigger = self.trigger.bfloat16()
 
-        # Ensure tokenizer has a pad token
-        if self.tokenizer.pad_token is None:
+        # Ensure tokenizer has a pad token (work with both plain tokenizers and processor.tokenizer)
+        if getattr(self.tokenizer, "pad_token", None) is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
             self.tokenizer.padding_side = "left"

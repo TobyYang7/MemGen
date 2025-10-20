@@ -47,10 +47,12 @@ datasets:
       sft:
         cache_path: dataset/mm_math_sft
         val_ratio: 0.1
+        test_ratio: 0.1
         image_root: dataset/mm_math/images
       grpo: 
         cache_path: dataset/mm_math_grpo
         val_ratio: 0.1
+        test_ratio: 0.1
         image_root: dataset/mm_math/images
 
 # training/evaluation configs
