@@ -28,6 +28,8 @@ from .utils import (
     StaticEvalRecorder,
     DynamicEvalRecorder
 )
+from PIL import Image
+import torch
 
 @registry.register_runner("latmem")
 class LatentMemoryRunner(BaseRunner):
@@ -67,6 +69,14 @@ class LatentMemoryRunner(BaseRunner):
         self.generation_manager: InteractionManager = self.gen_cls(
             self.processing_class, self.model, self.interaction_config
         )
+        
+        # VIS: build multimodal features if present in dataset
+        if any(k in self.weaver_train_dataset.column_names for k in ("image_path",)):
+            self.weaver_train_dataset = self._prepare_mm_features(self.weaver_train_dataset)
+        if any(k in self.valid_dataset.column_names for k in ("image_path",)):
+            self.valid_dataset = self._prepare_mm_features(self.valid_dataset)
+        if any(k in self.test_dataset.column_names for k in ("image_path",)):
+            self.test_dataset = self._prepare_mm_features(self.test_dataset)
     
     def _parse_train_dataset(self, train_dataset: Dataset) -> Tuple[Dataset, Dataset]:
         trigger_trainset_size = min(500, len(train_dataset))
@@ -114,6 +124,73 @@ class LatentMemoryRunner(BaseRunner):
         # Apply filtering
         dataset = dataset.filter(filter_func)
 
+        return dataset
+    
+    def _prepare_mm_features(self, dataset: Dataset) -> Dataset:
+        processor = self.processing_class  # AutoProcessor for VL models
+
+        def _encode(example: Dict) -> Dict:
+            prompt = example.get("prompt")
+            completion = example.get("completion")
+            image_path = example.get("image_path")
+
+            image = None
+            if image_path is not None and os.path.exists(image_path):
+                try:
+                    image = Image.open(image_path).convert("RGB")
+                except Exception:
+                    image = None
+
+            if image is not None:
+                enc_prompt = processor(text=[prompt], images=[image], return_tensors="pt", padding=False)
+                prompt_ids = enc_prompt["input_ids"][0]
+                prompt_mask = enc_prompt["attention_mask"][0]
+                pixel_values = enc_prompt.get("pixel_values")
+                if pixel_values is not None:
+                    pixel_values = pixel_values[0]
+            else:
+                enc_prompt = processor(text=[prompt], return_tensors="pt", padding=False)
+                prompt_ids = enc_prompt["input_ids"][0]
+                prompt_mask = enc_prompt["attention_mask"][0]
+                pixel_values = None
+
+            tokenizer = getattr(processor, "tokenizer", processor)
+            enc_comp = tokenizer(text=[completion], add_special_tokens=False, return_tensors="pt")
+            comp_ids = enc_comp["input_ids"][0]
+
+            input_ids = torch.cat([prompt_ids, comp_ids], dim=0)
+            attention_mask = torch.cat([prompt_mask, torch.ones_like(comp_ids)], dim=0)
+            labels = torch.cat([torch.full_like(prompt_ids, -100), comp_ids.clone()], dim=0)
+
+            image_token_mask = torch.zeros_like(input_ids, dtype=torch.bool)
+            if image is not None:
+                vision_start_ids = tokenizer.encode("<|vision_start|>", add_special_tokens=False)
+                vision_end_ids = tokenizer.encode("<|vision_end|>", add_special_tokens=False)
+                ids_list = prompt_ids.tolist()
+
+                def find_subseq(seq, sub):
+                    n, m = len(seq), len(sub)
+                    for i in range(0, n - m + 1):
+                        if seq[i:i+m] == sub:
+                            return i
+                    return -1
+
+                s_idx = find_subseq(ids_list, vision_start_ids) if len(vision_start_ids) > 0 else -1
+                e_idx = find_subseq(ids_list, vision_end_ids) if len(vision_end_ids) > 0 else -1
+                if s_idx != -1 and e_idx != -1 and e_idx >= s_idx:
+                    image_token_mask[s_idx:e_idx+len(vision_end_ids)] = True
+
+            out = {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "labels": labels,
+                "image_token_mask": image_token_mask,
+            }
+            if pixel_values is not None:
+                out["pixel_values"] = pixel_values
+            return out
+
+        dataset = dataset.map(_encode, remove_columns=[c for c in dataset.column_names if c not in ("prompt", "completion", "solution", "image_path")])
         return dataset
     
     # ===== train weaver =====

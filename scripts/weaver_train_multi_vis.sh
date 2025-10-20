@@ -1,25 +1,26 @@
 #!/bin/bash
 
-export DEBUG_MODE=true  
+export DEBUG_MODE=true
 export LOG_PATH="./debug_log_2b.txt"
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 export MAIN_PROCESS_PORT=29507
-export NCCL_DEBUG=INFO
+export NCCL_DEBUG=WARN
 export NCCL_IB_DISABLE=1
-export NCCL_P2P_DISABLE=1
+export NCCL_P2P_DISABLE=0
 export NCCL_ASYNC_DISABLE=1
+export TORCH_DISTRIBUTED_DEBUG=OFF
 
 # options:
-# - Qwen/Qwen2.5-1.5B-Instruct
-# - HuggingFaceTB/SmolLM3-3B
-REASONER_MODEL="Qwen/Qwen2.5-1.5B-Instruct"   
-WEAVER_MODEL="Qwen/Qwen2.5-1.5B-Instruct"
+# - Qwen/Qwen2.5-VL-3B-Instruct
+REASONER_MODEL="Qwen/Qwen2.5-VL-3B-Instruct"   
+WEAVER_MODEL="Qwen/Qwen2.5-VL-3B-Instruct" 
 TRIGGER_MODEL=null
 
 # Dataset configs
-DATASET_NAME="gsm8k"  # gsm8k, gpqa, kodcode, triviaqa
+DATASET_NAME="mm_math"  # options include: mm_math
 
 # MemGen configs
+TRAIN_METHOD="grpo"    # options: sft or grpo
 
 # Augmentation configs:
 # - For gsm8k, gpqa, kodcode: MAX_PROMPT_AUG_NUM=1, MAX_INFERENCE_AUG_NUM=5
@@ -29,17 +30,23 @@ MAX_INFERENCE_AUG_NUM=5
 PROMPT_LATENTS_LEN=8
 INFERENCE_LATENTS_LEN=8
 
-# Trained model path: 
+# Trained weaver model path: 
 # - Must point to a checkpoint file ending with .safetensors (e.g. <output_dir>/model.safetensors)
-# - Required when evaluating the model
-LOAD_MODEL_PATH="/root/MemGen/results/latmem/20251016-233026/weaver/model.safetensors"
+# - If specified, training will resume from this checkpoint;  
+# - if set to "null", training starts from scratch.  
+LOAD_WEAVER_PATH=null
 
-# evaluate
-python -m accelerate.commands.launch \
+NUM_PROCS=8
+
+# train
+uv run python -m accelerate.commands.launch \
+    --num_processes=${NUM_PROCS} \
+    --main_process_port=${MAIN_PROCESS_PORT} \
     --config_file=configs/zero2.yaml \
     main.py \
     --cfg-path configs/latent_memory/${DATASET_NAME}.yaml \
     --options \
+    method latmem_vis \
     model.reasoner_model_name ${REASONER_MODEL} \
     model.weaver.weaver_model_name ${WEAVER_MODEL} \
     model.trigger.trigger_model_name ${TRIGGER_MODEL} \
@@ -47,9 +54,11 @@ python -m accelerate.commands.launch \
     model.weaver.inference_latents_len ${INFERENCE_LATENTS_LEN} \
     model.max_prompt_aug_num ${MAX_PROMPT_AUG_NUM} \
     model.max_inference_aug_num ${MAX_INFERENCE_AUG_NUM} \
-    model.load_model_path ${LOAD_MODEL_PATH} \
-    run.mode evaluate \
-    run.generation.eval_batch_size 4 \
-    run.generation.do_sample False \
-    run.generation.temperature ${TEMPERATURE} \
-    run.generation.max_response_length 1024 \
+    model.load_model_path ${LOAD_WEAVER_PATH} \
+    run.mode train \
+    run.train_weaver True \
+    run.train_trigger False \
+    run.train_weaver_method ${TRAIN_METHOD} \
+    run.generation.do_sample True \
+    run.generation.temperature 1.0 \
+    run.generation.max_response_length 512 \

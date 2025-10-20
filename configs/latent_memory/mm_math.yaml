@@ -3,7 +3,7 @@ method: latmem
 
 model: 
   # base llm
-  reasoner_model_name: Qwen/Qwen2.5-1.5B-Instruct
+  reasoner_model_name: Qwen/Qwen2.5-VL-3B-Instruct
   # load trained model
   load_model_path: null
   
@@ -42,14 +42,16 @@ model:
       
 # dataset configs
 datasets: 
-    gsm8k:
+    mm_math:
       mode: sft  # options: ["sft", "grpo"], should manually keep align with the training method in `run` configs
       sft:
-        cache_path: dataset/gsm8k_sft
+        cache_path: dataset/mm_math_sft
         val_ratio: 0.1
+        image_root: dataset/mm_math/images
       grpo: 
-        cache_path: dataset/gsm8k_grpo
+        cache_path: dataset/mm_math_grpo
         val_ratio: 0.1
+        image_root: dataset/mm_math/images
 
 # training/evaluation configs
 run: 
