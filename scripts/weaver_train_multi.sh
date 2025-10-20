@@ -2,12 +2,13 @@
 
 export DEBUG_MODE=true
 export LOG_PATH="./debug_log_2b.txt"
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 export MAIN_PROCESS_PORT=29507
-export NCCL_DEBUG=INFO
+export NCCL_DEBUG=WARN
 export NCCL_IB_DISABLE=1
-export NCCL_P2P_DISABLE=1
+export NCCL_P2P_DISABLE=0
 export NCCL_ASYNC_DISABLE=1
+export TORCH_DISTRIBUTED_DEBUG=OFF
 
 # options:
 # - Qwen/Qwen2.5-1.5B-Instruct
@@ -18,10 +19,10 @@ TRIGGER_MODEL=null
 
 # Dataset configs
 DATASET_NAME="gsm8k"  # options: gsm8k, gpqa, kodcode, triviaqa
-DATASET_MODE="sft"    # options: sft or grpo
+DATASET_MODE="grpo"    # options: sft or grpo
 
 # MemGen configs
-TRAIN_METHOD="sft"    # options: sft or grpo
+TRAIN_METHOD="grpo"    # options: sft or grpo
 
 # Augmentation configs:
 # - For gsm8k, gpqa, kodcode: MAX_PROMPT_AUG_NUM=1, MAX_INFERENCE_AUG_NUM=5
@@ -37,8 +38,12 @@ INFERENCE_LATENTS_LEN=8
 # - if set to "null", training starts from scratch.  
 LOAD_WEAVER_PATH=null
 
+NUM_PROCS=8
+
 # train
 uv run python -m accelerate.commands.launch \
+    --num_processes=${NUM_PROCS} \
+    --main_process_port=${MAIN_PROCESS_PORT} \
     --config_file=configs/zero2.yaml \
     main.py \
     --cfg-path configs/latent_memory/${DATASET_NAME}.yaml \
