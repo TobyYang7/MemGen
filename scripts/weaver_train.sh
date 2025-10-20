@@ -13,7 +13,7 @@ export NCCL_ASYNC_DISABLE=1
 # - Qwen/Qwen2.5-1.5B-Instruct
 # - HuggingFaceTB/SmolLM3-3B
 REASONER_MODEL="Qwen/Qwen2.5-1.5B-Instruct"   
-WEAVER_MODEL="Qwen/Qwen2.5-7B-Instruct" 
+WEAVER_MODEL="Qwen/Qwen2.5-1.5B-Instruct" 
 TRIGGER_MODEL=null
 
 # Dataset configs
