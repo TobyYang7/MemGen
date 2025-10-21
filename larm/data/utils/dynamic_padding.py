@@ -7,14 +7,17 @@ class DynamicPaddingDataCollater:
 
         self.tokenizer = tokenizer
 
-        if tokenizer.pad_token_id is None:
+        # Handle both tokenizer and processor (for multimodal models)
+        _actual_tokenizer = getattr(tokenizer, 'tokenizer', tokenizer)
+        
+        if _actual_tokenizer.pad_token_id is None:
             print("Warning: Tokenizer does not have a pad_token_id. Using 0 for input_ids and attention_mask padding.")
             self.padding_value_input = 0
         else:
-            self.padding_value_input = tokenizer.pad_token_id
+            self.padding_value_input = _actual_tokenizer.pad_token_id
 
         # labels 的填充值
-        self.padding_value_label = tokenizer.pad_token_id
+        self.padding_value_label = _actual_tokenizer.pad_token_id
 
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
 

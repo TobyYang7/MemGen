@@ -26,8 +26,8 @@ class MultiTurnInteractionManager(InteractionManager):
             do_sample=self.config.do_sample,
             max_new_tokens=self.config.max_response_length,
             temperature=self.config.temperature,
-            pad_token_id=self.tokenizer.pad_token_id,
-            eos_token_id=self.tokenizer.eos_token_id
+            pad_token_id=self._actual_tokenizer.pad_token_id,
+            eos_token_id=self._actual_tokenizer.eos_token_id
         )    
 
     def _batch_tokenize(self, responses: List[str]) -> torch.Tensor:
@@ -93,7 +93,7 @@ class MultiTurnInteractionManager(InteractionManager):
         batch_size = active_mask.shape[0]
         seq_len = responses_ids.shape[1]
         padded_responses = torch.full(
-            (batch_size, seq_len), self.tokenizer.pad_token_id,
+            (batch_size, seq_len), self._actual_tokenizer.pad_token_id,
             dtype=responses_ids.dtype, device=responses_ids.device
         )
         padded_responses[active_mask] = responses_ids   
@@ -132,7 +132,7 @@ class MultiTurnInteractionManager(InteractionManager):
             }
             # use tokenizer to add chat template and encode text to tokens: input_ids, attention_mask
             messages = self._build_chat_history(rollings_active)
-            self.tokenizer.padding_side = "left"
+            self._actual_tokenizer.padding_side = "left"
             inputs = self.tokenizer.apply_chat_template(
                 messages, tokenize=True, 
                 add_generation_prompt=True, 
@@ -149,7 +149,7 @@ class MultiTurnInteractionManager(InteractionManager):
             # postprocess
             prompt_len = inputs["input_ids"].size(1)
             responses = gen_output[:, prompt_len:]
-            responses = self.tensor_fn.erase_after_first_eos(responses, self.tokenizer.eos_token_id)
+            responses = self.tensor_fn.erase_after_first_eos(responses, self._actual_tokenizer.eos_token_id)
             responses_ids, responses_str = self._postprocess_responses(responses, rollings_active["envs"])
             all_responses_ids, all_responses_str = self._example_level_pad(responses_ids, responses_str, active_mask)
 
@@ -184,7 +184,7 @@ class MultiTurnInteractionManager(InteractionManager):
 
     
     def _postprocess_observations(self, observations: List[str]) -> List[str]:
-        self.tokenizer.padding_side = "right" 
+        self._actual_tokenizer.padding_side = "right" 
         next_obs_ids = self._batch_tokenize(observations)
 
         max_len = self.config.max_obs_length
@@ -199,7 +199,7 @@ class MultiTurnInteractionManager(InteractionManager):
 
             new_obs_ids = []
             for row in next_obs_ids:
-                valid_len = (row != self.tokenizer.pad_token_id).sum().item()
+                valid_len = (row != self._actual_tokenizer.pad_token_id).sum().item()
 
                 if valid_len > max_len:  
                     truncated = row[: max_len - extra_len]
@@ -226,7 +226,7 @@ class MultiTurnInteractionManager(InteractionManager):
         ]
         
         # ---------- prompts ----------
-        self.tokenizer.padding_side = "left"
+        self._actual_tokenizer.padding_side = "left"
         prompt_ids = self.tokenizer.apply_chat_template(                
             init_prompts, tokenize=True, 
             add_generation_prompt=False,  
@@ -236,7 +236,7 @@ class MultiTurnInteractionManager(InteractionManager):
         prompt_attn_mask = prompt_ids["attention_mask"]
         
         # ---------- responses ----------
-        self.tokenizer.padding_side = "right"
+        self._actual_tokenizer.padding_side = "right"
         response_ids = self.tokenizer.apply_chat_template(                
             inter_histories, 
             tokenize=True, 
@@ -269,6 +269,6 @@ class MultiTurnInteractionManager(InteractionManager):
             [prompt_info_mask, completion_info_mask], dim=1
         )
         
-        self.tokenizer.padding_side = "left"
+        self._actual_tokenizer.padding_side = "left"
 
         return output

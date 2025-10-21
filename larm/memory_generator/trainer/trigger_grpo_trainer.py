@@ -59,11 +59,16 @@ class TriggerGRPOTrainer(GRPOTrainer):
             peft_config=peft_config
         )
 
+        # Handle both tokenizer and processor (for multimodal models)
+        _actual_tokenizer = getattr(processing_class, 'tokenizer', processing_class)
+        self.eos_token_id = _actual_tokenizer.eos_token_id
+        self.pad_token_id = _actual_tokenizer.pad_token_id
+
         # If PEFT configuration is not provided, create a reference model based on the initial model.
         ref_model = create_reference_model(model.trigger)
         self.ref_model = self.accelerator.prepare_model(ref_model, evaluation_mode=True)
         self.tensor_fn = TensorHelper(TensorConfig(
-            pad_token_id=self.processing_class.pad_token_id,
+            pad_token_id=self.pad_token_id,
             max_prompt_length=self.max_prompt_length,
             max_obs_length=None,
             max_start_length=None
@@ -224,7 +229,7 @@ class TriggerGRPOTrainer(GRPOTrainer):
 
             # Pad the completions, and concatenate them with the prompts
             completion_ids = [torch.tensor(ids, device=device) for ids in completion_ids]
-            completion_ids = pad(completion_ids, padding_value=self.processing_class.pad_token_id)
+            completion_ids = pad(completion_ids, padding_value=self.pad_token_id)
             prompt_completion_ids = torch.cat([prompt_ids, completion_ids], dim=1)
         else:
             # Regular generation path
@@ -247,15 +252,15 @@ class TriggerGRPOTrainer(GRPOTrainer):
                     completion_ids = prompt_completion_ids[:, prompt_length:]
         
             # Mask everything after the first EOS token
-            # is_eos = completion_ids == self.processing_class.eos_token_id
+            # is_eos = completion_ids == self.eos_token_id
             # eos_idx = torch.full((is_eos.size(0),), is_eos.size(1), dtype=torch.long, device=device)
             # eos_idx[is_eos.any(dim=1)] = is_eos.int().argmax(dim=1)[is_eos.any(dim=1)]
             # sequence_indices = torch.arange(is_eos.size(1), device=device).expand(is_eos.size(0), -1)
             # completion_mask = (sequence_indices <= eos_idx.unsqueeze(1)).int()
             # completion_ids = completion_ids * completion_mask
-            completion_ids = self.tensor_fn.erase_after_first_eos(completion_ids, self.processing_class.eos_token_id)
-            completion_mask = completion_ids != self.processing_class.eos_token_id
-            is_eos = completion_ids == self.processing_class.eos_token_id
+            completion_ids = self.tensor_fn.erase_after_first_eos(completion_ids, self.eos_token_id)
+            completion_mask = completion_ids != self.eos_token_id
+            is_eos = completion_ids == self.eos_token_id
         # augmentation_mask: All sampled positions, not necessarily the ones enhanced by the weaver.
         augmentation_mask = completion_mask * (augmentation_ids != invalid_augmentation_id)
         

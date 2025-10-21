@@ -11,15 +11,13 @@ export NCCL_ASYNC_DISABLE=1
 export TORCH_DISTRIBUTED_DEBUG=OFF
 
 # options:
-# - Qwen/Qwen2.5-1.5B-Instruct
-# - HuggingFaceTB/SmolLM3-3B
-REASONER_MODEL="Qwen/Qwen2.5-1.5B-Instruct"   
-WEAVER_MODEL="Qwen/Qwen2.5-7B-Instruct" 
+# - Qwen/Qwen2.5-VL-3B-Instruct
+REASONER_MODEL="Qwen/Qwen2.5-VL-7B-Instruct"   
+WEAVER_MODEL="Qwen/Qwen2.5-1.5B-Instruct" 
 TRIGGER_MODEL=null
 
 # Dataset configs
-DATASET_NAME="gsm8k"  # options: gsm8k, gpqa, kodcode, triviaqa
-DATASET_MODE="grpo"    # options: sft or grpo
+DATASET_NAME="mm_math"  # options include: mm_math
 
 # MemGen configs
 TRAIN_METHOD="grpo"    # options: sft or grpo
@@ -56,11 +54,10 @@ uv run python -m accelerate.commands.launch \
     model.max_prompt_aug_num ${MAX_PROMPT_AUG_NUM} \
     model.max_inference_aug_num ${MAX_INFERENCE_AUG_NUM} \
     model.load_model_path ${LOAD_WEAVER_PATH} \
-    datasets.${DATASET_NAME}.mode ${DATASET_MODE} \
     run.mode train \
     run.train_weaver True \
     run.train_trigger False \
     run.train_weaver_method ${TRAIN_METHOD} \
     run.generation.do_sample True \
     run.generation.temperature 1.0 \
-    run.generation.max_response_length 512 \
+    run.generation.max_response_length 1024 \

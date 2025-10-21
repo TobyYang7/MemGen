@@ -44,16 +44,17 @@ model:
 datasets: 
     mm_math:
       mode: sft  # options: ["sft", "grpo"], should manually keep align with the training method in `run` configs
+      # max_samples: 50000
       sft:
         cache_path: dataset/mm_math_sft
         val_ratio: 0.1
         test_ratio: 0.1
-        image_root: dataset/mm_math/images
+        image_root: dataset/mm_math/images/MM_Math
       grpo: 
         cache_path: dataset/mm_math_grpo
         val_ratio: 0.1
         test_ratio: 0.1
-        image_root: dataset/mm_math/images
+        image_root: dataset/mm_math/images/MM_Math
 
 # training/evaluation configs
 run: 
@@ -97,7 +98,7 @@ run:
     # grpo configs
     grpo:
       max_epochs: 1
-      batch_size: 8
+      batch_size: 16
       num_generations: 8   
       num_iterations: 1
       grad_accum_steps: 1

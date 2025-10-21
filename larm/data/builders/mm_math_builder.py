@@ -1,4 +1,6 @@
 import os
+import re
+import logging
 from typing import Dict, List
 
 from datasets import DatasetDict, load_dataset
@@ -58,7 +60,7 @@ class MMMathBuilder(BaseDatasetBuilder):
         # Auto-download if missing
         if len(data_files) == 0:
             os.makedirs(cache_path, exist_ok=True)
-            print(f"Downloading MM_Math dataset to {cache_path}")
+            logging.info(f"Downloading MM_Math dataset to {cache_path}")
             jsonl_url = "https://huggingface.co/datasets/THU-KEG/MM_Math/resolve/main/MM_Math/MM_Math.jsonl"
             jsonl_path = os.path.join(cache_path, "mm_math.jsonl")
             if not os.path.exists(jsonl_path):
@@ -108,6 +110,22 @@ class MMMathBuilder(BaseDatasetBuilder):
                 "valid": split_valid,
                 "test": split_test,
             })
+        
+        # Apply max_samples AFTER all splits are done to avoid processing unnecessary data
+        # Try to get max_samples from full_config (parent level) first, then from mode-specific config
+        max_samples = getattr(self, 'full_config', {}).get("max_samples", None)
+        if max_samples is None:
+            max_samples = self.config.get("max_samples", None)
+        
+        if max_samples is not None and max_samples > 0:
+            logging.info(f"[MM_Math] Applying max_samples={max_samples} BEFORE preprocessing")
+            for split_name in list(raw_ds.keys()):
+                original_size = len(raw_ds[split_name])
+                if original_size > max_samples:
+                    raw_ds[split_name] = raw_ds[split_name].select(range(max_samples))
+                    logging.info(f"[MM_Math] {split_name}: {original_size} -> {len(raw_ds[split_name])} samples")
+                else:
+                    logging.info(f"[MM_Math] {split_name}: keeping all {original_size} samples")
 
         # add image_root into each example for downstream joining
         image_root = self.config.get("image_root", None)
@@ -117,7 +135,7 @@ class MMMathBuilder(BaseDatasetBuilder):
         # Auto-download images zip if folder missing
         if not os.path.isdir(image_root) or len(os.listdir(image_root)) == 0:
             os.makedirs(image_root, exist_ok=True)
-            print(f"Downloading MM_Math images to {image_root}")
+            logging.info(f"Downloading MM_Math images to {image_root}")
             zip_url = "https://huggingface.co/datasets/THU-KEG/MM_Math/resolve/main/MM_Math/MM_Math.zip"
             resp = requests.get(zip_url, timeout=300)
             resp.raise_for_status()
@@ -149,11 +167,38 @@ class MMMathBuilder(BaseDatasetBuilder):
                     return answer
                 return "\\boxed{" + answer + "}"
 
-            format_template = r"""Solve the visual math problem with proper reasoning, and make sure to put the FINAL ANSWER inside \boxed{}."""
+            def _extract_answer_from_solution(solution_text: str) -> str:
+                # Try to extract the LAST \boxed{...} occurrence from solution text (usually the final answer)
+                if not solution_text:
+                    return ""
+                
+                # Try both single and double backslash patterns
+                # First try double backslash (raw string in data)
+                matches = list(re.finditer(r"\\\\boxed\{([^}]+)\}", solution_text, flags=re.DOTALL))
+                if not matches:
+                    # Then try single backslash
+                    matches = list(re.finditer(r"\\boxed\{([^}]+)\}", solution_text, flags=re.DOTALL))
+                
+                if matches:
+                    return matches[-1].group(1).strip()
+                
+                # If no complete match, try to find \boxed{ and extract until end or newline
+                # This handles cases like \boxed{\frac{120} where closing } is missing
+                incomplete_pattern = r"\\\\?boxed\{([^}]*?)(?:\}|$|\n)"
+                incomplete_matches = list(re.finditer(incomplete_pattern, solution_text, flags=re.DOTALL))
+                if incomplete_matches:
+                    content = incomplete_matches[-1].group(1).strip()
+                    if content:
+                        return content
+                
+                return ""
+
+            format_template = r"""Given the image, solve the visual math problem with proper reasoning, and make sure to put the FINAL ANSWER inside \boxed{}."""
             prompt_template = "Question: {prompt}\n"
 
-            questions: List[str] = batch.get("question") or [""] * len(batch.get("answer", []))
-            answers: List[str] = batch.get("answer") or [""] * len(questions)
+            questions: List[str] = batch.get("question") or [""] * len(batch.get("solution", []))
+            answers_src: List[str] = batch.get("answer") or [""] * len(questions)
+            solutions_src: List[str] = batch.get("solution") or [""] * len(questions)
             # Prefer file_name; fallback to existing image_path field if present in source
             file_names_src = batch.get("file_name", [None] * len(questions))
             image_paths_src = batch.get("image_path", [None] * len(questions))
@@ -164,12 +209,27 @@ class MMMathBuilder(BaseDatasetBuilder):
             completions: List[str] = []
             solutions: List[str] = []
             image_paths: List[str] = []
-            for q, a, fn, root in zip(questions, answers, file_names, image_roots):
+            for q, a_src, sol_src, fn, root in zip(questions, answers_src, solutions_src, file_names, image_roots):
                 processed_prompt = format_template + prompt_template.format(prompt=(q or "").strip())
-                processed_label = _format_answer(a or "")
+                # Prefer explicit short answer; fallback to extracting from long solution
+                answer_text = (a_src or "").strip()
+                if len(answer_text) == 0:
+                    answer_text = _extract_answer_from_solution((sol_src or "").strip())
+                # Build completion/solution per mode
+                if self.mode == "sft":
+                    # completion uses the full rationale text if present, ending with boxed final
+                    completion_text = (sol_src or "").strip()
+                    if len(completion_text) == 0:
+                        completion_text = _format_answer(answer_text)
+                    processed_label = completion_text
+                    solution_label = _format_answer(answer_text)
+                else:
+                    # grpo: completion can be empty; solution only keeps final boxed for reward
+                    processed_label = ""
+                    solution_label = _format_answer(answer_text)
                 prompts.append(processed_prompt)
                 completions.append(processed_label)
-                solutions.append(processed_label)
+                solutions.append(solution_label)
                 if fn is not None:
                     image_paths.append(os.path.join(root, fn) if root is not None else fn)
                 else:
@@ -183,20 +243,33 @@ class MMMathBuilder(BaseDatasetBuilder):
             }
 
         def _map(split):
-            print(f"[MM_Math] Preprocess start: split={split}, batch_size={batch_size}")
+            logging.info(f"[MM_Math] Preprocess start: split={split}, batch_size={batch_size}")
             ds = raw_ds[split].map(
                 _preprocess_batch,
                 batched=True,
                 batch_size=batch_size,
                 num_proc=None,  # force single-process mapping
-                load_from_cache_file=False,
+                load_from_cache_file=True,  # Enable cache to speed up subsequent runs
                 desc=f"MM_Math preprocess ({split})",
             ).select_columns(keep_keys)
-            print(f"[MM_Math] Preprocess done: split={split}, num_rows={len(ds)}")
+            
+            # Filter out samples with empty solution (solution is required for reward computation)
+            # Note: completion can be empty in GRPO mode, but solution must have valid answer
+            def has_valid_solution(example):
+                solution = example.get("solution", "")
+                return solution is not None and len(solution.strip()) > 0
+            
+            original_size = len(ds)
+            ds = ds.filter(has_valid_solution, num_proc=None, desc=f"Filter empty solutions ({split})")
+            filtered_size = len(ds)
+            if original_size != filtered_size:
+                logging.warning(f"[MM_Math] {split}: Filtered out {original_size - filtered_size} samples with empty solutions")
+            
+            logging.info(f"[MM_Math] Preprocess done: split={split}, num_rows={len(ds)}")
             return ds
 
         dataset_dict = DatasetDict()
-        print(f"Building MM_Math dataset with {num_workers} workers (batched single-process mapping)")
+        logging.info(f"Building MM_Math dataset with {num_workers} workers (batched single-process mapping)")
         if "train" in raw_ds:
             dataset_dict["train"] = _map("train")
         if "valid" in raw_ds:
@@ -204,14 +277,33 @@ class MMMathBuilder(BaseDatasetBuilder):
         if "test" in raw_ds:
             dataset_dict["test"] = _map("test")
 
-        # Print a final processed example datapoint for quick verification
+        # After all splits are processed, log a verified example with non-empty boxed answer and brief stats
         try:
-            if "train" in dataset_dict and len(dataset_dict["train"]) > 0:
-                sample = dataset_dict["train"][0]
-                preview = {k: sample.get(k) for k in keep_keys if k in sample}
-                print("[MM_Math] Final processed example:", preview)
+            pattern = re.compile(r"\\boxed\\{[^}]+\\}")
+            found = None
+            checked = 0
+            nonempty = 0
+            total = 0
+
+            # Search within train then valid then test
+            for split_name in ("train", "valid", "test"):
+                if split_name in dataset_dict:
+                    ds = dataset_dict[split_name]
+                    total += len(ds)
+                    limit = min(2000, len(ds))
+                    for i in range(limit):
+                        ex = ds[i]
+                        sol = ex.get("solution", "") or ""
+                        if pattern.search(sol):
+                            nonempty += 1
+                            if found is None:
+                                found = {k: ex.get(k) for k in keep_keys if k in ex}
+                        checked += 1
+            if found is not None:
+                logging.info(f"[MM_Math] Example after full processing (verified boxed): {found}")
+            logging.info(f"[MM_Math] Boxed solution stats: checked={checked}, nonempty_boxed={nonempty}, total={total}")
         except Exception as e:
-            print("[MM_Math] Final example print failed:", e)
+            logging.warning(f"[MM_Math] Post-process verification log failed: {e}")
 
         return dataset_dict
 
@@ -229,11 +321,21 @@ class MMMathBuilder(BaseDatasetBuilder):
                 return answer
             return "\\boxed{" + answer + "}"
 
+        def _extract_answer_from_solution(solution_text: str) -> str:
+            if not solution_text:
+                return ""
+            m = re.search(r"\\boxed\\{([^}]+)\\}", solution_text, flags=re.DOTALL)
+            if m:
+                return m.group(1).strip()
+            return ""
+
         format_template = r"""Solve the visual math problem with proper reasoning, and make sure to put the FINAL ANSWER inside \boxed{}."""
         prompt_template = "Question: {prompt}\n"
 
         question = (example.get("question") or "").strip()
         answer = (example.get("answer") or "").strip()
+        if len(answer) == 0:
+            answer = _extract_answer_from_solution((example.get("solution") or "").strip())
         # Build absolute/relative image path using file_name and image_root from config
         file_name = example.get("file_name") or example.get("image_path")
         image_root = example.get("image_root")
@@ -257,9 +359,9 @@ class MMMathBuilder(BaseDatasetBuilder):
         if not hasattr(cls, "_printed_example"):
             try:
                 preview = {k: out.get(k) for k in ("prompt", "completion", "solution", "image_path")}
-                print("[MM_Math] Example after _preprocess:", preview)
+                logging.info(f"[MM_Math] Example after _preprocess: {preview}")
             except Exception as e:
-                print("[MM_Math] Example print failed:", e)
+                logging.warning(f"[MM_Math] Example log failed: {e}")
             cls._printed_example = True
 
         return out
@@ -273,5 +375,3 @@ class MMMathBuilder(BaseDatasetBuilder):
 
     def get_generation_manager_cls(self):
         return SingleTurnInteractionManager
-
-

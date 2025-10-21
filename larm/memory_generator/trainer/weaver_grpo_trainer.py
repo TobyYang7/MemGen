@@ -77,13 +77,90 @@ class WeaverGRPOTrainer(GRPOTrainer):
             peft_config
         )
         
+        # Handle both tokenizer and processor (for multimodal models)
+        _actual_tokenizer = getattr(processing_class, 'tokenizer', processing_class)
+        self.eos_token_id = _actual_tokenizer.eos_token_id
+        self.pad_token_id = _actual_tokenizer.pad_token_id
+        
         self.env_class = env_class
         self.env_main_config = env_main_config
         self.generation_manager = generation_manager
         
         assert self.max_prompt_length == generation_manager.config.max_start_length
         assert self.max_completion_length == generation_manager.config.max_response_length
-        assert self.temperature == generation_manager.config.temperature   
+        assert self.temperature == generation_manager.config.temperature
+        
+        # Initialize output file for saving GRPO generation results
+        import os
+        self.grpo_output_file = os.path.join(args.output_dir, "reasoner_grpo_output.txt")
+        self.grpo_generation_count = 0   
+    
+    def _save_grpo_outputs(
+        self, 
+        inputs: list[dict], 
+        completions_text: list[str], 
+        rewards_per_func: torch.Tensor,
+        mode: str = "train"
+    ):
+        """Save GRPO generation outputs to file.
+        
+        Args:
+            inputs: List of input dictionaries containing prompt, solution, etc.
+            completions_text: List of generated completions
+            rewards_per_func: Tensor of rewards per function (batch_size, num_funcs)
+            mode: "train" or "eval"
+        """
+        # Only save on main process to avoid duplicates
+        if not self.accelerator.is_main_process:
+            return
+        
+        import os
+        import json
+        from datetime import datetime
+        
+        # Gather data from all processes
+        all_inputs = gather_object(inputs)
+        all_completions = gather_object(completions_text)
+        all_rewards = self.accelerator.gather(rewards_per_func).cpu().tolist()
+        
+        # Only process on main process after gathering
+        if not self.accelerator.is_main_process:
+            return
+            
+        try:
+            # Create output directory if it doesn't exist
+            os.makedirs(os.path.dirname(self.grpo_output_file), exist_ok=True)
+            
+            with open(self.grpo_output_file, "a", encoding="utf-8") as f:
+                for idx, (inp, completion, rewards) in enumerate(zip(all_inputs, all_completions, all_rewards)):
+                    self.grpo_generation_count += 1
+                    
+                    # Extract information from input
+                    prompt = inp.get("prompt", "")
+                    solution = inp.get("solution", "")
+                    
+                    # Calculate total reward (weighted sum)
+                    total_reward = sum(r * w for r, w in zip(rewards, self.reward_weights.cpu().tolist()))
+                    
+                    # Format output
+                    separator = "=" * 80
+                    f.write(f"\n{separator}\n")
+                    f.write(f"[{mode.upper()}] Sample #{self.grpo_generation_count} | Step: {self.state.global_step} | Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    f.write(f"{separator}\n\n")
+                    
+                    f.write(f"📝 PROMPT + QUESTION:\n{prompt}\n\n")
+                    f.write(f"🤖 MODEL ANSWER:\n{completion}\n\n")
+                    f.write(f"✅ CORRECT ANSWER:\n{solution}\n\n")
+                    
+                    f.write(f"🎯 REWARDS:\n")
+                    for i, (reward_name, reward_value) in enumerate(zip(self.reward_func_names, rewards)):
+                        f.write(f"  - {reward_name}: {reward_value:.4f}\n")
+                    f.write(f"  - TOTAL (weighted): {total_reward:.4f}\n")
+                    f.write(f"\n{separator}\n")
+                    
+        except Exception as e:
+            import logging
+            logging.warning(f"Failed to save GRPO outputs: {e}")
     
     def _build_multiturn_envs(self, inputs: list[dict[str, Union[torch.Tensor, Any]]]) -> tuple[list[list[dict]], list]:
         init_messages, envs = [], []
@@ -319,7 +396,7 @@ class WeaverGRPOTrainer(GRPOTrainer):
 
             # Pad the completions, and concatenate them with the prompts
             completion_ids = [torch.tensor(ids, device=device) for ids in completion_ids]
-            completion_ids = pad(completion_ids, padding_value=self.processing_class.pad_token_id)
+            completion_ids = pad(completion_ids, padding_value=self.pad_token_id)
             prompt_completion_ids = torch.cat([prompts, completion_ids], dim=1)
         else:
             # Regular generation path
@@ -459,6 +536,9 @@ class WeaverGRPOTrainer(GRPOTrainer):
         for i, name in enumerate(self.reward_func_names):
             self._logs["rewards"][name].extend(rewards_per_func[:, i].tolist())
         self._logs["advantages"].extend(all_process_advantages.tolist())
+        
+        # Save GRPO outputs to file
+        self._save_grpo_outputs(inputs, completions_text, rewards_per_func, mode=mode)
 
         return {
             "prompt_ids": prompts,

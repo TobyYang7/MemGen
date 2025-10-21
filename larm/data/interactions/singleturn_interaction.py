@@ -25,8 +25,8 @@ class SingleTurnInteractionManager(InteractionManager):
             do_sample=self.config.do_sample,
             max_new_tokens=self.config.max_response_length,
             temperature=self.config.temperature,
-            pad_token_id=self.tokenizer.pad_token_id,
-            eos_token_id=self.tokenizer.eos_token_id
+            pad_token_id=self._actual_tokenizer.pad_token_id,
+            eos_token_id=self._actual_tokenizer.eos_token_id
         )
     
     def _batch_tokenize(self, responses: List[str]) -> torch.Tensor:
@@ -46,7 +46,7 @@ class SingleTurnInteractionManager(InteractionManager):
         pad_to_left: bool = True
     ) -> torch.Tensor:
         """Concatenate tensors and handle padding. Additionally, create a mask (info_mask) to cover the information block if it exists."""
-        pad_id = self.tokenizer.pad_token_id
+        pad_id = self._actual_tokenizer.pad_token_id
         tensors = [prompt, response]
         tensors_with_mask = [prompt_with_mask, response]
         if info is not None:
@@ -120,7 +120,7 @@ class SingleTurnInteractionManager(InteractionManager):
             **gen_kwargs
         )
         responses_ids = gen_output[:, rollings_active["input_ids"].size(1):]
-        responses_ids = self.tensor_fn.erase_after_first_eos(responses_ids, self.tokenizer.eos_token_id)
+        responses_ids = self.tensor_fn.erase_after_first_eos(responses_ids, self._actual_tokenizer.eos_token_id)
         
         # update right side
         original_right_side = self._update_right_side(original_right_side, responses_ids, next_obs_ids=None)

@@ -276,7 +276,7 @@ class LatentMemoryModel(BaseModel):
         
         self.warnings_issued = {}
         self.model_tags = None
-        log_trainable_params(self)
+        # log_trainable_params(self)
 
     def add_model_tags(self, tags: Union[list[str], str]) -> None:
         r"""

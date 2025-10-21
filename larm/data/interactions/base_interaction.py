@@ -31,14 +31,23 @@ class InteractionManager(ABC):
         is_validation: bool = False,
     ):
         self.tokenizer = tokenizer
-        self.tokenizer.padding_side = "left" 
+        
+        # Handle both tokenizer and processor (for multimodal models)
+        if hasattr(tokenizer, 'tokenizer'):
+            # It's a processor with nested tokenizer
+            self._actual_tokenizer = tokenizer.tokenizer
+        else:
+            # It's a regular tokenizer
+            self._actual_tokenizer = tokenizer
+            
+        self._actual_tokenizer.padding_side = "left" 
         self.actor_rollout_wg = actor_rollout_wg
         self.config = config
         self.is_validation = is_validation
         
-        assert tokenizer.pad_token_id is not None
+        assert self._actual_tokenizer.pad_token_id is not None
         self.tensor_fn = TensorHelper(TensorConfig(
-            pad_token_id=tokenizer.pad_token_id,
+            pad_token_id=self._actual_tokenizer.pad_token_id,
             max_prompt_length=config.max_prompt_length,
             max_obs_length=config.max_obs_length,
             max_start_length=config.max_start_length

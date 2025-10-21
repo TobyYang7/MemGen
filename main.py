@@ -79,7 +79,7 @@ def main():
     runner_cls = get_runner_class(config)
     runner = runner_cls(
         model=model, 
-        processing_class=model.tokenizer, 
+        processing_class=getattr(model, "processor", model.tokenizer), 
         configs=config,
         datasets_dict=datasets_dict, 
         env_and_gens_dict=env_and_gens_dict,
