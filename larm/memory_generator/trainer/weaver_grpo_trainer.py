@@ -30,6 +30,7 @@ from trl.models import create_reference_model, prepare_deepspeed, prepare_fsdp, 
 if is_peft_available():
     from peft import PeftConfig, get_peft_model
 if is_wandb_available():
+    logging.info("Wandb is available")
     import wandb
 
 from larm.data.interactions.base_interaction import (
@@ -92,7 +93,7 @@ class WeaverGRPOTrainer(GRPOTrainer):
         
         # Initialize output file for saving GRPO generation results
         import os
-        self.grpo_output_file = os.path.join(args.output_dir, "reasoner_grpo_output.txt")
+        self.grpo_output_file = os.path.join(args.output_dir, "../logs/reasoner_grpo_output.txt")
         self.grpo_generation_count = 0   
     
     def _save_grpo_outputs(

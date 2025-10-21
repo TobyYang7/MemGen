@@ -27,6 +27,17 @@ from .utils import (
     log_trainable_params,
 )
 
+# ANSI color codes for green text
+GREEN = '\033[92m'
+RESET = '\033[0m'
+
+def log_memory_insertion(latent_size: int, total_latents: int, tensor_shape: tuple, is_prompt: bool = True, step: str = "forward"):
+    """Log memory insertion with green color."""
+    aug_type = "Prompt" if is_prompt else "Inference"
+    shape_str = f"torch.Size({list(tensor_shape)})"
+    message = f"{GREEN}[MemGen] Weaver inserted {aug_type} memory: {latent_size}/{total_latents} latent vectors | Shape: {shape_str} (step: {step}){RESET}"
+    logging.info(message)
+
 def get_next_token(next_token_logits: torch.Tensor, do_sample: bool, temperature: float) -> torch.Tensor:
     """
     Selects the next token from model logits.
@@ -481,6 +492,7 @@ class LatentMemoryModel(BaseModel):
                     weaver_hidden_states, attn_mask, pos_ids = weaver.augment_prompt(
                         weaver_inputs_embeds, current_attention_mask, current_position_ids
                     )
+                log_memory_insertion(weaver_hidden_states.size(1), weaver.prompt_latents_num, tuple(weaver_hidden_states.shape), is_prompt=True, step="forward")
             else:
                 if use_image_only_context:
                     weaver_hidden_states, attn_mask, pos_ids = weaver.augment_inference(
@@ -490,7 +502,8 @@ class LatentMemoryModel(BaseModel):
                     weaver_inputs_embeds = self.reasoner_to_weaver(current_inputs_embeds)
                     weaver_hidden_states, attn_mask, pos_ids = weaver.augment_inference(
                         weaver_inputs_embeds, current_attention_mask, current_position_ids
-                    ) 
+                    )
+                log_memory_insertion(weaver_hidden_states.size(1), weaver.inference_latents_num, tuple(weaver_hidden_states.shape), is_prompt=False, step="forward") 
 
             # Map weaver hidden states back to reasoner embeddings
             latent_inputs_embeds = self.weaver_to_reasoner(weaver_hidden_states)
@@ -795,6 +808,7 @@ class LatentMemoryModel(BaseModel):
             weaver_hidden_states, attn_mask, pos_ids = weaver.augment_prompt(
                 weaver_inputs_embeds, current_attention_mask, current_position_ids
             )
+        log_memory_insertion(weaver_hidden_states.size(1), weaver.prompt_latents_num, tuple(weaver_hidden_states.shape), is_prompt=True, step="generate")
         latent_inputs_embeds = self.weaver_to_reasoner(weaver_hidden_states)
 
         # Concatenate initial augmented prompt
@@ -881,6 +895,7 @@ class LatentMemoryModel(BaseModel):
                     weaver_hidden_states, attn_mask, _ = weaver.augment_inference(
                         weaver_inputs_embeds, candidate_attention_mask, candidate_position_ids
                     )
+                log_memory_insertion(weaver_hidden_states.size(1), weaver.inference_latents_num, tuple(weaver_hidden_states.shape), is_prompt=False, step="generate")
                 latent_inputs_embeds = self.weaver_to_reasoner(weaver_hidden_states)
                 
                 candidate_inputs_embeds = torch.cat([candidate_inputs_embeds, latent_inputs_embeds], dim=1)

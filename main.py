@@ -45,8 +45,17 @@ def parse_args():
     return args
 
 def get_save_dir(config) -> str:
-    time = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return os.path.join("results", config.method, time)
+    # 如果配置中指定了output_dir，则使用它
+    if hasattr(config.run_cfg, 'output_dir') and config.run_cfg.output_dir:
+        save_dir = config.run_cfg.output_dir
+    else:
+        # 否则使用默认的目录结构
+        time = datetime.now().strftime("%Y%m%d-%H%M%S")
+        save_dir = os.path.join("results", config.method, time)
+    
+    # 确保目录存在
+    os.makedirs(save_dir, exist_ok=True)
+    return save_dir
 
 def get_runner_class(config) -> BaseRunner:
     print(config.method)

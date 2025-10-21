@@ -15,3 +15,5 @@ model/
 results/
 dataset/
 tmp/
+.cache/
+test_model/

@@ -61,11 +61,12 @@ run:
 
   seed: 42
   use_wandb: True
+  output_dir: test_model
   
   # route
   mode: train
   train_weaver: True
-  train_weaver_method: sft    # sft or grpo
+  train_weaver_method: grpo    # sft or grpo
   train_trigger: False
   train_trigger_method: grpo 
 
@@ -98,7 +99,7 @@ run:
     # grpo configs
     grpo:
       max_epochs: 1
-      batch_size: 16
+      batch_size: 8
       num_generations: 8   
       num_iterations: 1
       grad_accum_steps: 1
@@ -157,7 +158,7 @@ run:
   # generation config for GRPO training and evaluation
   generation:
     max_turns: 1
-    max_start_length: 1024     # Maximum length of the initial prompt.
+    max_start_length: 512     # Maximum length of the initial prompt.
     max_prompt_length: 4096    # Maximum prompt length during multi-turn interactions (includes all conversation history across turns).
     max_response_length: 1024
     max_obs_length: 512
