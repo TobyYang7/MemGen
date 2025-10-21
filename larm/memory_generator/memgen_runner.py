@@ -198,6 +198,7 @@ class LatentMemoryRunner(BaseRunner):
 
         # SFT Trainer
         if self.train_weaver_method == "sft":
+            # JSONL log path under save_dir
             weaver_trainer = SFTTrainer(
                 model=self.model,
                 args=self.weaver_training_args,

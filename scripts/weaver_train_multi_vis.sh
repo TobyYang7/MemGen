@@ -12,8 +12,8 @@ export TORCH_DISTRIBUTED_DEBUG=OFF
 
 # options:
 # - Qwen/Qwen2.5-VL-3B-Instruct
-REASONER_MODEL="Qwen/Qwen2.5-VL-3B-Instruct"   
-WEAVER_MODEL="Qwen/Qwen2.5-VL-3B-Instruct" 
+REASONER_MODEL="Qwen/Qwen2.5-VL-7B-Instruct"   
+WEAVER_MODEL="Qwen/Qwen2.5-1.5B-Instruct" 
 TRIGGER_MODEL=null
 
 # Dataset configs

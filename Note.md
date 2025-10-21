@@ -1,57 +1,113 @@
-## Training
+### Weaver + VLM 训练与推理设计（代码说明）
 
-### Weaver 训练机制（基于 `larm/memory_generator/memgen_model.py: LatentMemoryModel.forward`）
+本项目的 Reasoner 支持 VLM（如 Qwen-VL via `AutoModelForVision2Seq`）与纯 LLM；Weaver 保持为 LLM。Weaver 的作用是在指定插入点向 Reasoner 的隐空间注入“潜在记忆”向量，从而影响解码轨迹。新版本遵循“仅在图像 token 范围内进行检索与插入”的约束。
 
-- **训练目标**: 在指定插入点将 weaver 生成的潜在向量注入到 reasoner 的隐空间中，增强解码路径；仅对“非潜在位置”做语言模型监督，梯度主要更新 weaver 与映射层。
-- **两类前向**:
-  - **单轮 SFT**: `_instructional_forward` → 核心 `_forward`，在“提示结束处”与“推理分隔符后”插入潜在向量。
-  - **多轮 SFT**: `_conversational_forward` 将对话拆成多个监督段，每段独立走一次 `_forward`，最后拼回整条序列。
-  - **GRPO**: 由 `WeaverGRPOTrainer` 负责采样、奖励与策略优化，但插入与映射机制与 SFT 一致。
+---
 
-#### 关键入口
-- 函数签名：`LatentMemoryModel.forward(input_ids, attention_mask, labels, **kwargs)`
-- 路由：判断是否为对话格式，选择 `_instructional_forward`（单轮）或 `_conversational_forward`（多轮），最终统一计算自回归 LM 损失（忽略 `-100` 标签）。
+#### 组件与主要文件
+- `larm/memory_generator/memgen_model.py`：核心模型 `LatentMemoryModel`（注册名 `latmem`）。
+  - 子组件：`reasoner`（VLM/LLM）、`weaver`（LLM）、`trigger`（二分类/规则）、双向投影层 `reasoner_to_weaver` 与 `weaver_to_reasoner`。
+- `larm/memory_generator/memgen_runner.py`：Runner，解析配置，构建数据、环境与交互管理器；选择 SFT 或 GRPO 训练流程；附带 SFT/GRPO 日志。
+- `larm/memory_generator/trainer/weaver_grpo_trainer.py`：GRPO Trainer，负责采样、奖励与策略优化，已扩展多模态输入与 JSONL 日志。
+- `larm/data/interactions/singleturn_interaction.py`：单轮交互管理器；已将 `pixel_values` 与 `image_token_mask` 透传给模型生成。
+- `larm/memory_generator/weaver.py`：Weaver 模块，提供 `augment_prompt` 与 `augment_inference` 两类注入。
 
-#### 单轮训练流程（`_instructional_forward` → `_forward`）
-1) **选择插入点**
-   - 1 个“提示插入点”：label 从 `-100 → 有效` 的边界（单轮必须恰好一个）。
-   - 若干“推理插入点”：在监督区间内且位于分隔符 `[",", ".", "\n"]` 之后，数量由 `max_inference_aug_num` 限制。
+---
 
-2) **双向投影与插入**
-   - 用 reasoner 的 embedding 得到 `inputs_embeds`，逐段累加到当前序列。
-   - 将当前累积的 `inputs_embeds` 投影到 weaver 隐空间（`reasoner_to_weaver`），调用：
-     - `weaver.augment_prompt(...)`（提示处），或
-     - `weaver.augment_inference(...)`（推理处），
-     取 weaver 最后一层在新拼接位置的隐向量作为“潜在向量”。
-   - 将潜在向量投影回 reasoner 隐空间（`weaver_to_reasoner`），并与当前序列拼接，同时同步 `attention_mask/position_ids`。
+#### 训练（SFT）前向（`LatentMemoryModel.forward`）
+输入
+- `input_ids: Tensor[B, L]`：拼接后的 prompt+completion 序列
+- `attention_mask: Tensor[B, L]`
+- `labels: Tensor[B, L]`：-100 为忽略监督
+- （可选）`pixel_values: Tensor`：VLM 图像特征输入
+- （可选）`image_token_mask: Bool[B, L]`：标记文本序列中属于“图像 token 区间”的位置
 
-3) **屏蔽潜在位置监督**
-   - reasoner 在“插入后序列”上前向得到 `logits`。
-   - 通过位移后的潜在掩码剔除“潜在位置”的 `logits`，仅保留“非潜在位置”的监督目标。
+步骤
+1) 任务类型判断：单轮（instructional）或多轮（conversational）；多轮拆段逐段调用单轮逻辑。
+2) 选择插入点：
+   - 1 个“提示插入点”：label 从 -100→有效 的边界
+   - 若干“推理插入点”：监督区域内，紧随分隔符（"," "." "\n"）之后
+   - 若 `image_token_mask` 提供，则过滤上述插入点，仅保留位于图像区间的索引
+3) 逐段累积 + 注入：
+   - 将 Reasoner 的 `inputs_embeds` 分段累积，得到 `current_inputs_embeds/mask/pos`；
+   - 若提供图像上下文：先通过 VLM 前向获得最后层 hidden，抽取 `image_token_mask` 对应 span 的 `img_ctx/img_mask/img_pos`，再经 `reasoner_to_weaver` 投影为 `weaver_context_inputs/mask/pos`；
+   - 提示插入：`weaver.augment_prompt(weaver_context_inputs, ...)`（若无图像上下文则用 `reasoner_to_weaver(current_inputs_embeds)`）；
+   - 推理插入：`weaver.augment_inference(...)`（同上）；
+   - 将 weaver 的隐状态经 `weaver_to_reasoner` 投回 Reasoner 空间并拼接到当前序列。
+4) Reasoner 监督：
+   - Vision2Seq 情况下，传入 `pixel_values` 以保证解码条件化图像；
+   - 对插入位置的 logits 屏蔽监督（仅“非潜在位置”参与 CE 损失）。
 
-4) **语言模型损失（忽略 -100）**
-```python
-shift_logits = logits[..., :-1, :]
-shift_labels = labels[..., 1:]
-loss = CrossEntropyLoss(ignore_index=-100)(
-    shift_logits.reshape(-1, shift_logits.size(-1)),
-    shift_labels.reshape(-1),
-)
-```
-- **梯度路径**: 非潜在位置的 CE 损失 → `weaver_to_reasoner` → weaver → `reasoner_to_weaver`（reasoner 通常冻结）。
+输出
+- `CausalLMOutputWithPast`：`loss`（忽略 -100）、`logits`（与 `labels` 对齐）
 
-#### 多轮训练流程（`_conversational_forward`）
-- 按 `labels` 找到多个监督段（assistant 回复区间），逐段截取“到段末”的子序列分别调用一次 `_forward`（各段的潜在向量互不“泄漏”），把每段的 `logits` 回填到整序列对应区间，拼接后统一计算 LM 损失（忽略 `-100`）。
+目的与意义
+- Weaver 的潜在向量提供“记忆/技能”片段，注入到 Reasoner 的隐空间，引导其在包含图像线索的关键位置进行更有效的推理；只在图像 token 范围插入确保记忆与视觉信息强对齐。
 
-#### 与训练方式（SFT vs GRPO）的关系
-- **SFT**: 使用上述 CE 损失；weaver 查询向量在“提示结束 + 推理分隔符后”插入。
-- **GRPO**: `WeaverGRPOTrainer` 负责采样/奖励/优势计算与策略优化；生成阶段仍通过 weaver 插入与双向投影影响 reasoner 的解码。
+---
 
-#### 关键要点小结
-- **插入点选择**: 1 个提示插入 + 若干推理插入（分隔符后，限额）。
-- **双向投影**: Reasoner 隐空间 ↔ Weaver 隐空间。
-- **监督屏蔽**: 仅监督“非潜在位置”，潜在位置不参与 loss。
-- **多轮拆段**: 段内独立插入与前向，段间不共享潜在。
-- **参数更新**: 主要更新 weaver 与映射层；reasoner 默认冻结（除非显式解冻/PEFT）。
+#### 推理（`LatentMemoryModel.generate`）
+输入
+- `input_ids, attention_mask`（batch 推理）
+- （可选）`pixel_values, image_token_mask` 同训练
+- `generation_config`（采样温度/最大生成长度等）
+
+步骤
+1) 若提供图像：先通过 Reasoner 计算 hidden，抽取 `image_token_mask` 区间形成 weaver 的图像上下文三元组（inputs/mask/pos）。
+2) 初始提示插入：优先使用图像上下文执行 `augment_prompt`，将潜在向量投回并拼接。
+3) 逐步生成：每步用 Reasoner 产生下一个 token；
+4) 动态插入决策：通过 `_should_augment` 决策并限制仅在图像区间内才允许插入；若选择插入，使用 `augment_inference` 执行注入。
+
+输出
+- `input_ids` 或 `(input_ids, augmentation_pos)`：包含生成序列（可选返回插入位置掩码）
+
+意义
+- 将记忆注入行为与图像区域动态对齐，在解码过程中于视觉相关位置插入，从而提升视觉推理质量与稳定性。
+
+---
+
+#### GRPO 训练（`WeaverGRPOTrainer`）
+输入
+- 从 `InteractionManager` 构建的 `InteractionDataProto`，包含：
+  - `batch`: `input_ids/attention_mask`（如有图像：还包含 `pixel_values` 与 `image_token_mask`）
+  - `no_tensor_batch`: 任务元信息
+
+生成与打分
+- 使用 `actor_rollout_wg.generate` 进行批量生成（多模态参数透传），内部即调用模型的 `generate`，因此遵循上面的图像上下文与插入逻辑；
+- 解析输出构造 `prompt_ids/completion_ids/...`，按配置的奖励函数评估 `rewards_per_func` 并聚合为优势；
+- 计算 GRPO 损失并反传，仅在 completion 段落监督。
+
+日志
+- SFT：`results/<method>/<time>/logs/sft_train_log.txt`
+- GRPO：`results/<method>/<time>/logs/grpo_train_log.txt`
+  - 每条记录包含：step、prompt（尽力解码）、pred、ref（若数据包含）、参数（长度/温度等）、是否含图像等。
+
+---
+
+#### 数据与特征（以 MM_Math 为例）
+- `mm_math_builder.py` 会构造 `prompt/completion/solution/image_path`；
+- `memgen_runner._prepare_mm_features` 用 `AutoProcessor` 读取图像，生成 `pixel_values`，并尝试用 `tokenizer` 的视觉特殊标记推断 `image_token_mask`；
+- 训练与生成均会消费这些字段。
+
+---
+
+#### 输入/输出汇总（按阶段）
+- 训练前向：
+  - 入：`input_ids/attention_mask/labels`，可选 `pixel_values/image_token_mask`
+  - 出：`loss, logits`（插入位置被屏蔽监督）
+- 推理生成：
+  - 入：`input_ids/attention_mask`，可选 `pixel_values/image_token_mask`，`generation_config`
+  - 出：`generated_ids`（可选 `augmentation_pos`）
+- GRPO：
+  - 入：`InteractionDataProto(batch=..., no_tensor_batch=...)`
+  - 出：trainer 内部的 `advantages/loss/metrics`，外部仅见日志与模型权重更新
+
+---
+
+#### 设计要点与取舍
+- 只在图像 token 范围内插入，保证记忆与视觉线索强绑定，避免无关文本处的扰动。
+- 通过双向投影层隔离 Reasoner 与 Weaver 的隐空间差异，便于替换模型与减少梯度耦合。
+- Vision2Seq 下训练必须传入 `pixel_values`，确保 loss 真正条件化图像。
+- 日志 JSONL 便于训练中排错与案例级诊断（包含 QA、预测与关键参数）。
 
 

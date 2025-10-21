@@ -2,13 +2,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import (
-    AutoModelForCausalLM, 
     AutoModelForVision2Seq,
     AutoTokenizer,
     AutoProcessor,
     PreTrainedTokenizerBase,
-    GenerationConfig,
-    AutoConfig
+    GenerationConfig
 )
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from peft import PeftConfig, LoraConfig
@@ -228,36 +226,20 @@ class LatentMemoryModel(BaseModel):
     ):   
         super().__init__()
 
-        # build reasoner LLM (support text-only and VLM)
-        vlm_loaded = False
+        # build reasoner VLM only
         try:
-            self.model = AutoModelForCausalLM.from_pretrained(
+            self.model = AutoModelForVision2Seq.from_pretrained(
                 reasoner_model_name, torch_dtype=torch.bfloat16, attn_implementation="flash_attention_2"
             )
-        except Exception as e:
-            logging.info(
-                f"Falling back to AutoModelForVision2Seq for reasoner '{reasoner_model_name}' due to: {e}"
+        except Exception:
+            # retry without attn_implementation in case model doesn't accept it
+            self.model = AutoModelForVision2Seq.from_pretrained(
+                reasoner_model_name, torch_dtype=torch.bfloat16
             )
-            try:
-                self.model = AutoModelForVision2Seq.from_pretrained(
-                    reasoner_model_name, torch_dtype=torch.bfloat16, attn_implementation="flash_attention_2"
-                )
-                vlm_loaded = True
-            except Exception:
-                # retry without attn_implementation in case model doesn't accept it
-                self.model = AutoModelForVision2Seq.from_pretrained(
-                    reasoner_model_name, torch_dtype=torch.bfloat16
-                )
-                vlm_loaded = True
-        # tokenizer/processor: use AutoProcessor for VLMs, but always expose a real tokenizer via self.tokenizer
-        self.processor = None
-        if vlm_loaded:
-            self.processor = AutoProcessor.from_pretrained(reasoner_model_name)
-            # Prefer the underlying tokenizer from the processor if available
-            if hasattr(self.processor, "tokenizer") and self.processor.tokenizer is not None:
-                self.tokenizer = self.processor.tokenizer
-            else:
-                self.tokenizer = AutoTokenizer.from_pretrained(reasoner_model_name)
+        # tokenizer/processor for VLMs: always use AutoProcessor and expose underlying tokenizer if present
+        self.processor = AutoProcessor.from_pretrained(reasoner_model_name)
+        if hasattr(self.processor, "tokenizer") and self.processor.tokenizer is not None:
+            self.tokenizer = self.processor.tokenizer
         else:
             self.tokenizer = AutoTokenizer.from_pretrained(reasoner_model_name)
         self.config = self.model.config
@@ -408,17 +390,33 @@ class LatentMemoryModel(BaseModel):
         B, _ = input_ids.shape
         hidden_size = reasoner.config.hidden_size
 
+        # VIS: optional VLM inputs and image-only context (pre-initialize for early checks below)
+        pixel_values = kwargs.get("pixel_values", None)
+        image_token_mask: Optional[torch.Tensor] = kwargs.get("image_token_mask", None)
+        use_image_only_context = (pixel_values is not None) and (image_token_mask is not None)
+
         # select augment idx
         augmentation_indices = self._select_augment_points_after_delimiter(
             input_ids, labels, delimiters, tokenizer, max_augment_num
         )
+        # If using image-only context, restrict augmentation indices to lie within image token spans
+        if use_image_only_context:
+            try:
+                allowed = []
+                for idx in augmentation_indices:
+                    # only keep indices where all batch elements mark this as image token
+                    if image_token_mask[:, idx].all().item():
+                        allowed.append(idx)
+                if len(allowed) == 0:
+                    logging.warning("No valid augmentation indices within image token span; skipping augmentation for this sample.")
+                else:
+                    augmentation_indices = allowed
+            except Exception as e:
+                logging.warning(f"Failed to restrict augmentation indices to image span: {e}")
         
         # origin inputs embeds
         inputs_embeds = reasoner.get_input_embeddings()(input_ids)
         # VIS: optional VLM inputs and image-only context
-        pixel_values = kwargs.get("pixel_values", None)
-        image_token_mask: Optional[torch.Tensor] = kwargs.get("image_token_mask", None)
-        use_image_only_context = (pixel_values is not None) and (image_token_mask is not None)
         if use_image_only_context:
             with torch.no_grad():
                 vlm_outputs = reasoner(
@@ -516,10 +514,12 @@ class LatentMemoryModel(BaseModel):
         current_position_ids = generate_position_ids(current_attention_mask)
         current_latents_mask = torch.cat([current_latents_mask, latent_mask], dim=1)
 
+        # Pass pixel_values for Vision2Seq models if available
         reasoner_outputs = reasoner(
             inputs_embeds=current_inputs_embeds,
             attention_mask=current_attention_mask,
-            position_ids=current_position_ids
+            position_ids=current_position_ids,
+            pixel_values=pixel_values if use_image_only_context else None
         )
         logits = reasoner_outputs.logits
         
@@ -738,6 +738,44 @@ class LatentMemoryModel(BaseModel):
             use_cache=True
         )
 
+        # Build image-only context if provided
+        pixel_values = kwargs.get("pixel_values", None)
+        image_token_mask: Optional[torch.Tensor] = kwargs.get("image_token_mask", None)
+        use_image_only_context = (pixel_values is not None) and (image_token_mask is not None)
+
+        if use_image_only_context:
+            with torch.no_grad():
+                vlm_outputs = reasoner(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    pixel_values=pixel_values,
+                    output_hidden_states=True,
+                    use_cache=False,
+                )
+                vlm_hidden: torch.Tensor = vlm_outputs.hidden_states[-1]
+
+            if image_token_mask.dtype != torch.bool:
+                image_token_mask = image_token_mask.bool()
+            B = input_ids.size(0)
+            img_counts = image_token_mask.sum(dim=1)
+            max_img_len = int(img_counts.max().item()) if B > 0 else 0
+            if max_img_len > 0:
+                img_ctx = torch.zeros((B, max_img_len, vlm_hidden.size(-1)), dtype=vlm_hidden.dtype, device=vlm_hidden.device)
+                img_mask = torch.zeros((B, max_img_len), dtype=attention_mask.dtype, device=attention_mask.device)
+                for b in range(B):
+                    idxs = image_token_mask[b].nonzero(as_tuple=True)[0]
+                    length = idxs.numel()
+                    if length > 0:
+                        img_ctx[b, :length] = vlm_hidden[b, idxs]
+                        img_mask[b, :length] = 1
+                img_pos = generate_position_ids(img_mask)
+
+                weaver_context_inputs = self.reasoner_to_weaver(img_ctx)
+                weaver_context_mask = img_mask
+                weaver_context_pos = img_pos
+            else:
+                use_image_only_context = False
+
         inputs_embeds = reasoner.get_input_embeddings()(input_ids)
         B, _, hidden_size = inputs_embeds.shape
         device = inputs_embeds.device
@@ -748,7 +786,7 @@ class LatentMemoryModel(BaseModel):
         current_input_ids = input_ids
         
         # Initial augmentation: allow image-only context
-        if 'use_image_only_context' in locals() and use_image_only_context:
+        if use_image_only_context:
             weaver_hidden_states, attn_mask, pos_ids = weaver.augment_prompt(
                 weaver_context_inputs, weaver_context_mask, weaver_context_pos
             )
@@ -806,6 +844,17 @@ class LatentMemoryModel(BaseModel):
                 current_input_ids, current_attention_mask, sentence_augment_count=sentence_augment_count, 
                 do_sample=do_sample, temperature=temperature  
             )
+            # Enforce augmentation only within image token spans if available: mask out decisions for sequences whose last token is outside image span
+            if use_image_only_context:
+                # last position index per sequence
+                last_idx = current_attention_mask.sum(dim=1) - 1
+                last_idx = last_idx.clamp_min(0)
+                within_img = []
+                for b in range(current_input_ids.size(0)):
+                    idx = int(last_idx[b].item())
+                    within_img.append(bool(image_token_mask[b, idx].item()))
+                within_img = torch.tensor(within_img, device=augment_decision.device, dtype=torch.bool)
+                augment_decision = torch.where(within_img, augment_decision, torch.full_like(augment_decision, -100))
             augmentation_pos[:, i + 1] = augment_decision
             augment_indices = torch.where(augment_decision == 1)[0]
 
@@ -820,7 +869,7 @@ class LatentMemoryModel(BaseModel):
                 candidate_position_ids = current_position_ids[augment_indices]
                 
                 # Perform inference augmentation using the weaver (image-only context if available)
-                if 'use_image_only_context' in locals() and use_image_only_context:
+                if use_image_only_context:
                     ctx_inputs = weaver_context_inputs[augment_indices]
                     ctx_mask = weaver_context_mask[augment_indices]
                     ctx_pos = weaver_context_pos[augment_indices]

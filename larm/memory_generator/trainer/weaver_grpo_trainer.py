@@ -62,7 +62,7 @@ class WeaverGRPOTrainer(GRPOTrainer):
         peft_config: Optional["PeftConfig"] = None,
         env_class = None,   # env main class
         env_main_config = None,  # configs to initialize an env object
-        generation_manager: InteractionManager = None  # manage the interaction between agent and env
+        generation_manager: InteractionManager = None,  # manage the interaction between agent and env
     ):
         super().__init__(
             model, 
@@ -174,17 +174,62 @@ class WeaverGRPOTrainer(GRPOTrainer):
         # Single-turn env
         if issubclass(self.env_class, StaticEnv):
             prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
-            prompt_inputs = self.processing_class(
-                text=prompts_text, return_tensors="pt", padding=True, padding_side="left", add_special_tokens=False
-            )
-                
-            prompts, prompt_mask = prompt_inputs["input_ids"].to(device), prompt_inputs["attention_mask"].to(device)
-            if self.max_prompt_length is not None:
-                prompts = prompts[:, -self.max_prompt_length :]
-                prompt_mask = prompt_mask[:, -self.max_prompt_length :]
 
-            gen_batch.batch["input_ids"] = prompts 
-            gen_batch.batch["attention_mask"] = prompt_mask
+            # Detect multimodal inputs, and resolve a processor that supports images
+            has_images = all([("image_path" in ex and ex["image_path"] is not None) or ("pixel_values" in ex) for ex in inputs])
+            tokenizer = getattr(self.processing_class, "tokenizer", self.processing_class)
+            encode_processor = self.processing_class if isinstance(self.processing_class, ProcessorMixin) else getattr(self.model, "processor", None)
+            supports_images = isinstance(encode_processor, ProcessorMixin)
+            if has_images and supports_images:
+                # Prepare images tensor if available
+                images = None
+                if "pixel_values" in inputs[0]:
+                    try:
+                        images = torch.stack([ex["pixel_values"] for ex in inputs]).to(device)
+                    except Exception:
+                        images = None
+                # Use processor with images
+                enc = encode_processor(text=prompts_text, images=images, return_tensors="pt", padding=True)
+                prompts = enc["input_ids"].to(device)
+                prompt_mask = enc["attention_mask"].to(device)
+                if self.max_prompt_length is not None:
+                    prompts = prompts[:, -self.max_prompt_length:]
+                    prompt_mask = prompt_mask[:, -self.max_prompt_length:]
+                gen_batch.batch["input_ids"] = prompts
+                gen_batch.batch["attention_mask"] = prompt_mask
+                if images is not None:
+                    gen_batch.batch["pixel_values"] = images
+                # Build image token mask via special token delimiters if present
+                try:
+                    vision_start_ids = tokenizer.encode("<|vision_start|>", add_special_tokens=False)
+                    vision_end_ids = tokenizer.encode("<|vision_end|>", add_special_tokens=False)
+                    mask = torch.zeros_like(prompts, dtype=torch.bool)
+                    ids_list = prompts.tolist()
+                    def find_subseq(seq, sub):
+                        n, m = len(seq), len(sub)
+                        for i in range(0, n - m + 1):
+                            if seq[i:i+m] == sub:
+                                return i
+                        return -1
+                    for b in range(prompts.size(0)):
+                        s_idx = find_subseq(ids_list[b], vision_start_ids) if len(vision_start_ids) > 0 else -1
+                        e_idx = find_subseq(ids_list[b], vision_end_ids) if len(vision_end_ids) > 0 else -1
+                        if s_idx != -1 and e_idx != -1 and e_idx >= s_idx:
+                            mask[b, s_idx:e_idx+len(vision_end_ids)] = True
+                    gen_batch.batch["image_token_mask"] = mask
+                except Exception:
+                    pass
+            else:
+                # Text-only fallback
+                prompt_inputs = self.processing_class(
+                    text=prompts_text, return_tensors="pt", padding=True, padding_side="left", add_special_tokens=False
+                )
+                prompts, prompt_mask = prompt_inputs["input_ids"].to(device), prompt_inputs["attention_mask"].to(device)
+                if self.max_prompt_length is not None:
+                    prompts = prompts[:, -self.max_prompt_length :]
+                    prompt_mask = prompt_mask[:, -self.max_prompt_length :]
+                gen_batch.batch["input_ids"] = prompts 
+                gen_batch.batch["attention_mask"] = prompt_mask
         # Multi-turn env
         elif issubclass(self.env_class, DynamicEnv):
             init_prompts, envs = self._build_multiturn_envs(inputs)

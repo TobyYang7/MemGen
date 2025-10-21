@@ -106,10 +106,18 @@ class SingleTurnInteractionManager(InteractionManager):
         }  
 
         # model generation
+        # Optional multimodal kwargs
+        gen_kwargs = {}
+        if "pixel_values" in rollings_active:
+            gen_kwargs["pixel_values"] = rollings_active["pixel_values"]
+        if "image_token_mask" in rollings_active:
+            gen_kwargs["image_token_mask"] = rollings_active["image_token_mask"]
+
         gen_output = self.actor_rollout_wg.generate(
             rollings_active["input_ids"], 
             rollings_active["attention_mask"], 
-            generation_config=self.generation_config
+            generation_config=self.generation_config,
+            **gen_kwargs
         )
         responses_ids = gen_output[:, rollings_active["input_ids"].size(1):]
         responses_ids = self.tensor_fn.erase_after_first_eos(responses_ids, self.tokenizer.eos_token_id)
