@@ -1,0 +1,4 @@
+datasets:
+  mm_math:
+    cache_path: dataset/mm_math
+    image_root: dataset/mm_math/images/MM_Math

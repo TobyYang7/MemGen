@@ -1,0 +1,167 @@
+# method name
+method: latmem
+
+model: 
+  # base llm
+  reasoner_model_name: Qwen/Qwen2.5-VL-7B-Instruct
+  # load trained model
+  load_model_path: null
+  
+  # max prompt/inference augmentation num
+  max_prompt_aug_num: null
+  max_inference_aug_num: 5
+
+  # processor configs
+  weaver:
+    weaver_model_name: Qwen/Qwen2.5-1.5B-Instruct
+    prompt_latents_len: 8
+    inference_latents_len: 8
+
+    use_peft: True
+    peft_config:
+      r: 16
+      lora_alpha: 32
+      target_modules: ["q_proj", "v_proj"]
+      lora_dropout: 0.1
+      bias: "none"
+      task_type: "CAUSAL_LM"
+
+  
+  # trigger model configs
+  trigger:
+    trigger_model_name: Qwen/Qwen2.5-0.5B-Instruct
+  
+    use_peft: True
+    peft_config:
+      r: 16
+      lora_alpha: 32
+      target_modules: ["q_proj", "v_proj"]
+      lora_dropout: 0.1
+      bias: "none"
+      task_type: "CAUSAL_LM"
+      
+# dataset configs
+datasets: 
+    mm_math:
+      mode: sft  # options: ["sft", "grpo"], should manually keep align with the training method in `run` configs
+      # max_samples: 50000
+      sft:
+        cache_path: dataset/mm_math_sft
+        val_ratio: 0.1
+        test_ratio: 0.1
+        image_root: dataset/mm_math/images/MM_Math
+      grpo: 
+        cache_path: dataset/mm_math_grpo
+        val_ratio: 0.1
+        test_ratio: 0.1
+        image_root: dataset/mm_math/images/MM_Math
+
+# training/evaluation configs
+run: 
+
+  seed: 42
+  use_wandb: True
+  output_dir: test_model
+  
+  # route
+  mode: train
+  train_weaver: True
+  train_weaver_method: grpo    # sft or grpo
+  train_trigger: False
+  train_trigger_method: grpo 
+
+  # processor training configs
+  weaver:
+    
+    # sft configs
+    sft:
+      max_epochs: 2
+      batch_size: 4
+      grad_accum_steps: 1
+      
+      # optimizer configs
+      optim: adamw_torch
+      schedular: cosine
+      warmup_ratio: 0.1
+      lr: 1e-5
+      
+      # logging
+      logging_strategy: steps
+      logging_steps: 1
+      eval_strategy: epoch
+      eval_steps: 100
+      save_strategy: epoch
+      save_steps: 100
+ 
+      assistant_only_loss: False   # used only in conversational dataset
+      max_length: 1024  # max sequence length
+      
+    # grpo configs
+    grpo:
+      max_epochs: 1
+      batch_size: 8
+      num_generations: 8   
+      num_iterations: 1
+      grad_accum_steps: 1
+      beta: 0.0
+      loss_type: bnpo
+      
+      # optimizer configs
+      optim: adamw_torch
+      schedular: cosine
+      warmup_ratio: 0.1
+      lr: 1e-5
+      
+      # duration
+      logging_strategy: steps
+      logging_steps: 1
+      eval_strategy: epoch
+      eval_steps: 100
+      save_strategy: epoch
+      save_steps: 100
+
+      # rewards
+      reward_funcs: 
+          - name: accuracy
+            weight: 1
+
+  # trigger training configs
+  trigger:
+
+    grpo:
+      max_epochs: 2
+      batch_size: 8
+      num_generations: 8
+      num_iterations: 1
+      grad_accum_steps: 1
+      beta: 0.0
+      
+      # optimizer configs
+      optim: adamw_torch
+      lr: 1e-5
+      schedular: cosine
+      warmup_ratio: 0.1
+      
+      # duration
+      logging_strategy: steps
+      logging_steps: 1
+      eval_strategy: steps
+      eval_steps: 100
+      save_strategy: steps
+      save_steps: 100
+
+      # rewards
+      reward_funcs: 
+          - name: accuracy
+            weight: 1.0
+  
+  # generation config for GRPO training and evaluation
+  generation:
+    max_turns: 1
+    max_start_length: 512     # Maximum length of the initial prompt.
+    max_prompt_length: 4096    # Maximum prompt length during multi-turn interactions (includes all conversation history across turns).
+    max_response_length: 1024
+    max_obs_length: 512
+    do_sample: False
+    temperature: 1.0
+    eval_batch_size: 8
