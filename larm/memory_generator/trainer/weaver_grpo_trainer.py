@@ -30,7 +30,6 @@ from trl.models import create_reference_model, prepare_deepspeed, prepare_fsdp, 
 if is_peft_available():
     from peft import PeftConfig, get_peft_model
 if is_wandb_available():
-    logging.info("Wandb is available")
     import wandb
 
 from larm.data.interactions.base_interaction import (
