@@ -1,5 +1,5 @@
 test_output/
-data/*
+# data/*
 **.pyc
 **.pyo
 **.pyd

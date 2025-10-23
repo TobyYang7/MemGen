@@ -130,7 +130,7 @@
                 "run.train_weaver_method", "grpo",
                 "run.generation.do_sample", "True",
                 "run.generation.temperature", "1.0",
-                "run.generation.max_response_length", "1024",
+                "run.generation.max_response_length", "5000",
                 "run.output_dir", "${workspaceFolder}/test_output/mm_math",
                 "datasets.mm_math.mode", "grpo"
             ]
