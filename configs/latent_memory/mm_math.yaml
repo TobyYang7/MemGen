@@ -44,7 +44,6 @@ model:
 datasets: 
     mm_math:
       mode: sft  # options: ["sft", "grpo"], should manually keep align with the training method in `run` configs
-      # max_samples: 50000
       sft:
         cache_path: dataset/mm_math_sft
         val_ratio: 0.1

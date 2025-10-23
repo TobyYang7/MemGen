@@ -83,7 +83,17 @@ class WeaverGRPOTrainer(GRPOTrainer):
         
         assert self.max_prompt_length == generation_manager.config.max_start_length
         assert self.max_completion_length == generation_manager.config.max_response_length
-        assert self.temperature == generation_manager.config.temperature   
+        assert self.temperature == generation_manager.config.temperature
+        
+        # Initialize GRPO logging file
+        import os
+        self.grpo_log_file = os.path.join(args.output_dir, "grpo_logs.txt")
+        os.makedirs(args.output_dir, exist_ok=True)
+        # Create/clear the log file
+        with open(self.grpo_log_file, "w", encoding="utf-8") as f:
+            f.write("=" * 80 + "\n")
+            f.write("GRPO Training Logs - WeaverGRPOTrainer\n")
+            f.write("=" * 80 + "\n\n")   
     
     def _build_multiturn_envs(self, inputs: list[dict[str, Union[torch.Tensor, Any]]]) -> tuple[list[list[dict]], list]:
         init_messages, envs = [], []
@@ -349,6 +359,22 @@ class WeaverGRPOTrainer(GRPOTrainer):
         # Decode the generated completions
         completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
         completions = completions_text
+        
+        # Log completions to grpo_logs.txt
+        if self.accelerator.is_main_process:
+            try:
+                with open(self.grpo_log_file, "a", encoding="utf-8") as f:
+                    f.write(f"\n{'='*80}\n")
+                    f.write(f"Step: {self.state.global_step} | Mode: {mode}\n")
+                    f.write(f"{'='*80}\n")
+                    for idx, (prompt_txt, completion_txt) in enumerate(zip(prompts, completions_text)):
+                        f.write(f"\n[Sample {idx}]\n")
+                        f.write(f"Prompt: {prompt_txt}\n")
+                        f.write(f"Completion: {completion_txt}\n")
+                        f.write(f"{'-'*80}\n")
+                    f.flush()
+            except Exception as e:
+                logging.warning(f"Failed to write to GRPO log file: {e}")
         
         # compute rewards
         rewards_per_func = self._calculate_rewards(inputs, prompts, completions, completion_ids_list)

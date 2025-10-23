@@ -45,8 +45,14 @@ def parse_args():
     return args
 
 def get_save_dir(config) -> str:
-    time = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return os.path.join("results", config.method, time)
+    # Read output_dir directly from config
+    output_dir = config.run_cfg.get("output_dir", None)
+    if output_dir is None:
+        # Fallback to time-based naming if not specified
+        time = datetime.now().strftime("%Y%m%d-%H%M%S")
+        output_dir = os.path.join("results", config.method, time)
+        logging.warning(f"output_dir not specified in config, using default: {output_dir}")
+    return output_dir
 
 def get_runner_class(config) -> BaseRunner:
     print(config.method)
@@ -77,9 +83,11 @@ def main():
     
     # build runner
     runner_cls = get_runner_class(config)
+    # For multimodal models, use processor; otherwise use tokenizer
+    processing_class = getattr(model, 'processor', model.tokenizer)
     runner = runner_cls(
         model=model, 
-        processing_class=model.tokenizer, 
+        processing_class=processing_class, 
         configs=config,
         datasets_dict=datasets_dict, 
         env_and_gens_dict=env_and_gens_dict,

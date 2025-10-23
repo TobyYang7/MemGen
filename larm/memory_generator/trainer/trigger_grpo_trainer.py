@@ -68,6 +68,16 @@ class TriggerGRPOTrainer(GRPOTrainer):
             max_obs_length=None,
             max_start_length=None
         ))
+        
+        # Initialize GRPO logging file
+        import os
+        self.grpo_log_file = os.path.join(args.output_dir, "grpo_logs.txt")
+        os.makedirs(args.output_dir, exist_ok=True)
+        # Create/clear the log file
+        with open(self.grpo_log_file, "w", encoding="utf-8") as f:
+            f.write("=" * 80 + "\n")
+            f.write("GRPO Training Logs - TriggerGRPOTrainer\n")
+            f.write("=" * 80 + "\n\n")
     
     def _set_signature_columns_if_needed(self):
         # NOTE - If `self.args.remove_unused_columns` is True, non-signature columns are removed.
@@ -307,6 +317,23 @@ class TriggerGRPOTrainer(GRPOTrainer):
         # Decode the generated completions
         completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
         completions = completions_text
+        
+        # Log completions to grpo_logs.txt
+        if self.accelerator.is_main_process:
+            try:
+                with open(self.grpo_log_file, "a", encoding="utf-8") as f:
+                    f.write(f"\n{'='*80}\n")
+                    f.write(f"Step: {self.state.global_step} | Mode: {mode}\n")
+                    f.write(f"{'='*80}\n")
+                    for idx, (prompt_txt, completion_txt) in enumerate(zip(prompts, completions_text)):
+                        f.write(f"\n[Sample {idx}]\n")
+                        f.write(f"Prompt: {prompt_txt}\n")
+                        f.write(f"Completion: {completion_txt}\n")
+                        f.write(f"{'-'*80}\n")
+                    f.flush()
+            except Exception as e:
+                import logging
+                logging.warning(f"Failed to write to GRPO log file: {e}")
 
         for i in range(len(inputs)):   
             inputs[i]["augmentation_ids"] = augmentation_ids[i]

@@ -5,7 +5,10 @@ from transformers import (
     AutoModelForCausalLM, 
     AutoTokenizer,
     PreTrainedTokenizerBase,
-    GenerationConfig
+    GenerationConfig,
+    Qwen2_5_VLForConditionalGeneration,
+    AutoProcessor
+    
 )
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from peft import PeftConfig, LoraConfig
@@ -13,6 +16,7 @@ from peft import PeftConfig, LoraConfig
 import random
 from typing import Tuple, Optional, List, Union
 import logging
+import functools
 
 from larm.task.base_model import BaseModel
 from larm.common.registry import registry
@@ -26,6 +30,18 @@ from .utils import (
     log_trainable_params,
 )
 
+# Decorator to log function calls in blue
+def log_function_call(func):
+    """Decorator to log function calls with blue color."""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        func_name = func.__name__
+        # Blue color ANSI code
+        logging.info(f"\033[94m[CALL] {func_name}\033[0m")
+        return func(*args, **kwargs)
+    return wrapper
+
+# @log_function_call
 def get_next_token(next_token_logits: torch.Tensor, do_sample: bool, temperature: float) -> torch.Tensor:
     """
     Selects the next token from model logits.
@@ -62,6 +78,7 @@ def get_next_token(next_token_logits: torch.Tensor, do_sample: bool, temperature
         return torch.argmax(next_token_logits, dim=-1, keepdim=True)
 
 
+# @log_function_call
 def generate_position_ids(attention_mask: torch.Tensor) -> torch.Tensor:
     """
     Generate position ID tensor based on the given attention mask.
@@ -84,6 +101,7 @@ def generate_position_ids(attention_mask: torch.Tensor) -> torch.Tensor:
     position_ids.masked_fill_(attention_mask == 0, 0)
     return position_ids
 
+@log_function_call
 def is_conversation(input_ids: torch.Tensor, tokenizer) -> bool:
     """
     Check whether the given input IDs represent a conversation format.  
@@ -119,6 +137,7 @@ def is_conversation(input_ids: torch.Tensor, tokenizer) -> bool:
     return has_start and has_end
 
 
+@log_function_call
 def postprocess_assistant_labels(
     input_ids: torch.Tensor,
     labels: torch.Tensor,
@@ -167,6 +186,7 @@ def postprocess_assistant_labels(
 
     return new_labels
 
+# @log_function_call
 def check_ends_with_delimiter(
     input_ids: torch.Tensor, tokenizer: PreTrainedTokenizerBase, delimiters: List[str]
 ) -> torch.Tensor:
@@ -211,6 +231,7 @@ def check_ends_with_delimiter(
 @registry.register_model("latmem")
 class LatentMemoryModel(BaseModel):
 
+    @log_function_call
     def __init__(
         self, 
         reasoner_model_name: str, 
@@ -225,11 +246,18 @@ class LatentMemoryModel(BaseModel):
     ):   
         super().__init__()
 
-        # build reasoner LLM
-        self.model = AutoModelForCausalLM.from_pretrained(
+        # # build reasoner LLM
+        # self.model = AutoModelForCausalLM.from_pretrained(
+        #     reasoner_model_name, torch_dtype=torch.bfloat16, attn_implementation="flash_attention_2"
+        # )
+        
+        # todo: add vlm: qwen2.5-vl
+        self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             reasoner_model_name, torch_dtype=torch.bfloat16, attn_implementation="flash_attention_2"
         )
-        self.tokenizer = AutoTokenizer.from_pretrained(reasoner_model_name)
+        
+        self.processor = AutoProcessor.from_pretrained(reasoner_model_name)
+        self.tokenizer = self.processor.tokenizer
         self.config = self.model.config
         
         # build weaver LLM
@@ -249,11 +277,11 @@ class LatentMemoryModel(BaseModel):
         # map reasoner input embeddings to weaver input embeddings
         self.reasoner_to_weaver = nn.Linear(
             self.model.config.hidden_size, self.weaver.config.hidden_size, dtype=torch.bfloat16
-        )
+        ) # NOTE: 2048 -> 1536
         # Map weaver hidden states to reasoner input embeddings
         self.weaver_to_reasoner = nn.Linear(
             self.weaver.config.hidden_size, self.model.config.hidden_size, dtype=torch.bfloat16
-        )
+        ) # NOTE: 1536 -> 2048
         
         self.delimiters: List[str] = [",", ".", "\n"]  # delimiters for detecting augmentation points
         self.max_prompt_aug_num = max_prompt_aug_num  # insert latents after input prompt
@@ -266,6 +294,7 @@ class LatentMemoryModel(BaseModel):
         self.model_tags = None
         log_trainable_params(self)
 
+    @log_function_call
     def add_model_tags(self, tags: Union[list[str], str]) -> None:
         r"""
         Add custom tags into the model that gets pushed to the Hugging Face Hub. Will
@@ -298,6 +327,7 @@ class LatentMemoryModel(BaseModel):
             if tag not in self.model_tags:
                 self.model_tags.append(tag)
     
+    @log_function_call
     def _postprocess_models(self):
         """
         Postprocess the components of the latent memory model: reasoner, weaver, trigger, and tokenizer.
@@ -326,38 +356,44 @@ class LatentMemoryModel(BaseModel):
             logging.info(
                 f"Tokenizer has no pad token. Using EOS token ({self.tokenizer.eos_token}) as pad token."
             )
+        
+        # Synchronize model config with tokenizer's special tokens to avoid warnings
+        # Update model config
+        if hasattr(self.model, 'config'):
+            self.model.config.pad_token_id = self.tokenizer.pad_token_id
+            self.model.config.bos_token_id = self.tokenizer.bos_token_id
+            self.model.config.eos_token_id = self.tokenizer.eos_token_id
+        
+        # Update generation config
+        if hasattr(self.model, 'generation_config'):
+            if self.model.generation_config is not None:
+                self.model.generation_config.pad_token_id = self.tokenizer.pad_token_id
+                self.model.generation_config.bos_token_id = self.tokenizer.bos_token_id
+                self.model.generation_config.eos_token_id = self.tokenizer.eos_token_id
+        
+        # Also update processor's tokenizer if it exists
+        if hasattr(self, 'processor') and hasattr(self.processor, 'tokenizer'):
+            self.processor.tokenizer.pad_token_id = self.tokenizer.pad_token_id
+            self.processor.tokenizer.bos_token_id = self.tokenizer.bos_token_id
+            self.processor.tokenizer.eos_token_id = self.tokenizer.eos_token_id
+            # Also set chat template for processor's tokenizer
+            self.processor.tokenizer.chat_template = CONVERSATION_TEMPLATE
 
         # Normalize the tokenizer's chat template
         self.tokenizer.chat_template = CONVERSATION_TEMPLATE
+        
+        logging.info(
+            f"Synchronized special tokens - pad_token_id: {self.tokenizer.pad_token_id}, "
+            f"bos_token_id: {self.tokenizer.bos_token_id}, eos_token_id: {self.tokenizer.eos_token_id}"
+        )
 
     @property
     def device(self):
         assert self.model.device == self.weaver.device == self.trigger.device
         return self.model.device
     
-    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
-        """Enable gradient checkpointing for the model."""
-        if hasattr(self.model, 'gradient_checkpointing_enable'):
-            self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs)
-        if hasattr(self.weaver, 'gradient_checkpointing_enable'):
-            self.weaver.gradient_checkpointing_enable(gradient_checkpointing_kwargs)
-        if hasattr(self.trigger, 'gradient_checkpointing_enable'):
-            self.trigger.gradient_checkpointing_enable(gradient_checkpointing_kwargs)
     
-    def gradient_checkpointing_disable(self):
-        """Disable gradient checkpointing for the model."""
-        if hasattr(self.model, 'gradient_checkpointing_disable'):
-            self.model.gradient_checkpointing_disable()
-        if hasattr(self.weaver, 'gradient_checkpointing_disable'):
-            self.weaver.gradient_checkpointing_disable()
-        if hasattr(self.trigger, 'gradient_checkpointing_disable'):
-            self.trigger.gradient_checkpointing_disable()
-    
-    @property
-    def is_gradient_checkpointing(self):
-        """Check if gradient checkpointing is enabled."""
-        return getattr(self.model, 'is_gradient_checkpointing', False)
-    
+    @log_function_call
     def _forward(
         self, 
         input_ids: torch.Tensor,
@@ -459,6 +495,7 @@ class LatentMemoryModel(BaseModel):
         # assert valid_logits.shape[:2] == input_ids.shape
         return valid_logits
     
+    # @log_function_call
     def _instructional_forward(
         self, 
         input_ids: torch.Tensor,
@@ -488,6 +525,7 @@ class LatentMemoryModel(BaseModel):
         # For Instruction SFT, labels remain the same as input
         return logits, labels
 
+    # @log_function_call
     def _conversational_forward(
         self, 
         input_ids: torch.Tensor,
@@ -573,6 +611,7 @@ class LatentMemoryModel(BaseModel):
         # - unsupervised positions have logits = 0 and labels = -100
         return all_logits, all_labels
 
+    @log_function_call
     def forward(
         self, 
         input_ids: torch.Tensor, 
@@ -629,6 +668,7 @@ class LatentMemoryModel(BaseModel):
         return outputs
 
     
+    @log_function_call
     @torch.no_grad()
     def generate(
         self, 
@@ -636,6 +676,8 @@ class LatentMemoryModel(BaseModel):
         attention_mask: torch.Tensor,
         generation_config: GenerationConfig = None,
         return_augmentation_mask: bool = False,
+        pixel_values: Optional[torch.Tensor] = None,
+        image_grid_thw: Optional[Tuple[int, int, int]] = None,
         **kwargs
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]: 
         
@@ -663,8 +705,23 @@ class LatentMemoryModel(BaseModel):
             eos_token_id=eos_token_id,
             use_cache=True
         )
+        
+        with torch.no_grad():
+            outputs = reasoner(
+                input_ids=input_ids,
+                pixel_values=pixel_values,
+                image_grid_thw=image_grid_thw,
+                attention_mask=attention_mask,
+                return_dict=True,
+                output_hidden_states=True,
+            )
+        
+        # Use embedding layer output (hidden_states[0]) as inputs_embeds to ensure compatibility with model's embedding space.
+        fused_embeds = outputs.hidden_states[0]  # Embedding output after token & vision embedding projection
+        logging.info(f"Seed embeds shape (from hidden_states[0]): {fused_embeds.shape}")
 
-        inputs_embeds = reasoner.get_input_embeddings()(input_ids)
+        inputs_embeds = fused_embeds
+
         B, _, hidden_size = inputs_embeds.shape
         device = inputs_embeds.device
 
@@ -704,6 +761,9 @@ class LatentMemoryModel(BaseModel):
                     inputs_embeds=current_inputs_embeds,
                     attention_mask=current_attention_mask,
                     generation_config=generation_config,
+                    # fix: check if pixel_values and image_grid_thw should be here
+                    # pixel_values=pixel_values,
+                    # image_grid_thw=image_grid_thw,
                 )
                 current_input_ids = torch.cat([current_input_ids, generated], dim=1)
                 break
@@ -712,6 +772,8 @@ class LatentMemoryModel(BaseModel):
                 inputs_embeds=current_inputs_embeds,
                 attention_mask=current_attention_mask,
                 position_ids=current_position_ids,
+                # pixel_values=pixel_values,
+                # image_grid_thw=image_grid_thw,
                 output_hidden_states=False,
             )
             current_inputs_embeds, current_attention_mask, current_position_ids, current_input_ids = self._append_one_step(
@@ -788,6 +850,7 @@ class LatentMemoryModel(BaseModel):
 
     
     @classmethod
+    @log_function_call
     def from_config(cls, config):
         # reasoner configs
         reasoner_model_name = config.get("reasoner_model_name", None)
@@ -839,6 +902,7 @@ class LatentMemoryModel(BaseModel):
         return model
     
 
+    # @log_function_call
     @torch.no_grad()
     def _append_one_step(
         self,
@@ -872,6 +936,7 @@ class LatentMemoryModel(BaseModel):
 
         return current_inputs_embeds, current_attention_mask, current_position_ids, current_input_ids
     
+    # @log_function_call
     def _select_augment_points_after_delimiter(
         self,
         input_ids: torch.Tensor,
@@ -941,6 +1006,7 @@ class LatentMemoryModel(BaseModel):
         final_points.sort()
         return final_points
 
+    # @log_function_call
     @torch.no_grad()
     def _should_augment(
         self, 
@@ -1005,6 +1071,7 @@ class LatentMemoryModel(BaseModel):
         return aug_mask
 
     
+    @log_function_call
     @torch.no_grad()
     def _left_pad(
         self,
@@ -1031,6 +1098,7 @@ class LatentMemoryModel(BaseModel):
 
         return input_embeds, attention_mask, position_ids
     
+    @log_function_call
     @torch.no_grad()
     def _left_clip_pad_tokens(
         self, inputs_embeds: torch.Tensor, attention_mask: torch.Tensor, position_ids: torch.Tensor
@@ -1078,4 +1146,36 @@ class LatentMemoryModel(BaseModel):
         position_ids = position_ids[:, min_pad:]
 
         return inputs_embeds, attention_mask, position_ids
+    
+    
+    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
+        """
+        Enable gradient checkpointing for all sub-modules that support it.
+        """
+        kwargs = gradient_checkpointing_kwargs or {}
+        for module in [self.model, getattr(self, "weaver", None),
+                        getattr(self, "trigger", None)]:
+            if hasattr(module, "gradient_checkpointing_enable"):
+                module.gradient_checkpointing_enable(**kwargs)
+
+    def gradient_checkpointing_disable(self):
+        """
+        Disable gradient checkpointing for all sub-modules that support it.
+        """
+        for module in [self.model, getattr(self, "weaver", None),
+                        getattr(self, "trigger", None)]:
+            if hasattr(module, "gradient_checkpointing_disable"):
+                module.gradient_checkpointing_disable()
+
+    @property
+    def is_gradient_checkpointing(self):
+        """
+        Check if gradient checkpointing is enabled for any sub-module.
+        """
+        for module in [self.model, getattr(self, "weaver", None),
+                        getattr(self, "trigger", None)]:
+            if hasattr(module, "is_gradient_checkpointing"):
+                if module.is_gradient_checkpointing:
+                    return True
+        return False
 

@@ -30,6 +30,7 @@ class InteractionManager(ABC):
         config: InteractionConfig,
         is_validation: bool = False,
     ):
+        tokenizer = tokenizer.tokenizer # fix: processor --> tokenizer
         self.tokenizer = tokenizer
         self.tokenizer.padding_side = "left" 
         self.actor_rollout_wg = actor_rollout_wg

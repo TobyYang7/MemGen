@@ -8,6 +8,20 @@ from peft import PeftConfig, get_peft_model
 
 from typing import Optional, Tuple
 
+# Decorator to log function calls in blue
+import functools
+import logging
+
+def log_function_call(func):
+    """Decorator to log function calls with blue color."""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        func_name = func.__name__
+        # Blue color ANSI code
+        logging.info(f"\033[94m[Weaver] {func_name}\033[0m")
+        return func(*args, **kwargs)
+    return wrapper
+
 
 class MemGenWeaver(torch.nn.Module):
     """
@@ -59,6 +73,7 @@ class MemGenWeaver(torch.nn.Module):
     def device(self):
         return self.model.device
 
+    @log_function_call
     def _augment(
         self, 
         latents: torch.Tensor,
@@ -98,6 +113,7 @@ class MemGenWeaver(torch.nn.Module):
 
         return latents_hidden_states, latents_mask, latents_position_ids
 
+    @log_function_call
     def augment_prompt(
         self, 
         inputs_embeds: torch.Tensor, 
@@ -111,7 +127,7 @@ class MemGenWeaver(torch.nn.Module):
             position_ids=position_ids
         )
 
-
+    @log_function_call
     def augment_inference(
         self, 
         inputs_embeds: torch.Tensor, 
