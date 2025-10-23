@@ -18,7 +18,7 @@ def log_function_call(func):
     def wrapper(*args, **kwargs):
         func_name = func.__name__
         # Blue color ANSI code
-        logging.info(f"\033[94m[Weaver] {func_name}\033[0m")
+        # logging.info(f"\033[94m[Weaver] {func_name}\033[0m")
         return func(*args, **kwargs)
     return wrapper
 

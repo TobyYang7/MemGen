@@ -169,7 +169,9 @@ def main():
     if isinstance(outputs, tuple):  # when return_augmentation_mask=True
         outputs = outputs[0]
     generated_ids = outputs[0].detach().cpu()
-    text = processor.tokenizer.decode(generated_ids, skip_special_tokens=True)
+    # Filter out placeholder ids (e.g., -100) that may be inserted during generation
+    valid_token_ids = [tid for tid in generated_ids.tolist() if tid >= 0]
+    text = processor.tokenizer.decode(valid_token_ids, skip_special_tokens=True)
 
     print("\n===== MODEL OUTPUT =====\n")
     print(text)

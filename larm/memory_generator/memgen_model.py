@@ -37,7 +37,7 @@ def log_function_call(func):
     def wrapper(*args, **kwargs):
         func_name = func.__name__
         # Blue color ANSI code
-        logging.info(f"\033[94m[CALL] {func_name}\033[0m")
+        # logging.info(f"\033[94m[CALL] {func_name}\033[0m")
         return func(*args, **kwargs)
     return wrapper
 
@@ -284,6 +284,7 @@ class LatentMemoryModel(BaseModel):
         ) # NOTE: 1536 -> 2048
         
         self.delimiters: List[str] = [",", ".", "\n"]  # delimiters for detecting augmentation points
+        # self.delimiters: List[str] = ["."]  # delimiters for detecting augmentation points
         self.max_prompt_aug_num = max_prompt_aug_num  # insert latents after input prompt
         self.max_inference_aug_num = max_inference_aug_num  # insert latents after specified delimiters
 
@@ -398,7 +399,9 @@ class LatentMemoryModel(BaseModel):
         self, 
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
-        labels: torch.Tensor,   
+        labels: torch.Tensor,
+        pixel_values: Optional[torch.Tensor] = None,
+        image_grid_thw: Optional[Tuple[int, int, int]] = None,
         **kwargs
     ) -> torch.Tensor:
         # preprocess inputs
@@ -419,9 +422,21 @@ class LatentMemoryModel(BaseModel):
             input_ids, labels, delimiters, tokenizer, max_augment_num
         )
         
-        # origin inputs embeds
-        inputs_embeds = reasoner.get_input_embeddings()(input_ids)
-                
+        # origin inputs embeds (use fused embeddings when image inputs are provided)
+        if pixel_values is not None:
+            with torch.no_grad():
+                seed_outputs = reasoner(
+                    input_ids=input_ids,
+                    pixel_values=pixel_values,
+                    image_grid_thw=image_grid_thw,
+                    attention_mask=attention_mask,
+                    return_dict=True,
+                    output_hidden_states=True,
+                )
+            inputs_embeds = seed_outputs.hidden_states[0]
+        else:
+            inputs_embeds = reasoner.get_input_embeddings()(input_ids)
+        
         # Initialize the start index and empty tensors for accumulating processed segments
         current_start_idx = 0
         current_inputs_embeds = torch.empty((B, 0, hidden_size), device=device, dtype=embeds_dtype)
@@ -457,7 +472,7 @@ class LatentMemoryModel(BaseModel):
                 ) 
 
             # Map weaver hidden states back to reasoner embeddings
-            latent_inputs_embeds = self.weaver_to_reasoner(weaver_hidden_states)
+            latent_inputs_embeds = self.weaver_to_reasoner(weaver_hidden_states) # NOTE
 
             # Update accumulated embeddings and masks with the newly augmented segment
             current_inputs_embeds = torch.cat([current_inputs_embeds, latent_inputs_embeds], dim=1)
@@ -500,7 +515,9 @@ class LatentMemoryModel(BaseModel):
         self, 
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
-        labels: torch.Tensor,   
+        labels: torch.Tensor,
+        pixel_values: Optional[torch.Tensor] = None,
+        image_grid_thw: Optional[Tuple[int, int, int]] = None,
         **kwargs
     ) -> torch.Tensor:
         """
@@ -521,7 +538,14 @@ class LatentMemoryModel(BaseModel):
                 - logits: The output logits from the model for each input token.
                 - labels: The same as input labels, used for loss computation.
         """
-        logits = self._forward(input_ids, attention_mask, labels, **kwargs)
+        logits = self._forward(
+            input_ids,
+            attention_mask,
+            labels,
+            pixel_values=pixel_values,
+            image_grid_thw=image_grid_thw,
+            **kwargs,
+        )
         # For Instruction SFT, labels remain the same as input
         return logits, labels
 
@@ -530,7 +554,9 @@ class LatentMemoryModel(BaseModel):
         self, 
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
-        labels: torch.Tensor,   
+        labels: torch.Tensor,
+        pixel_values: Optional[torch.Tensor] = None,
+        image_grid_thw: Optional[Tuple[int, int, int]] = None,
         **kwargs
     ) -> torch.Tensor:
         """
@@ -600,7 +626,14 @@ class LatentMemoryModel(BaseModel):
                 cur_labels[0, :valid_start] = -100  # Mask tokens before supervision start
 
                 # Single-turn forward for the current conversation segment
-                logits = self._forward(cur_input_ids, cur_attention, cur_labels, **kwargs)
+                logits = self._forward(
+                    cur_input_ids,
+                    cur_attention,
+                    cur_labels,
+                    pixel_values=pixel_values,
+                    image_grid_thw=image_grid_thw,
+                    **kwargs,
+                )
                 
                 # Update overall logits and labels with the results of this segment
                 all_logits[0, start:end, :] = logits[0, start:end, :]
@@ -617,6 +650,8 @@ class LatentMemoryModel(BaseModel):
         input_ids: torch.Tensor, 
         attention_mask: torch.Tensor,
         labels: torch.Tensor,
+        pixel_values: Optional[torch.Tensor] = None,
+        image_grid_thw: Optional[Tuple[int, int, int]] = None,
         **kwargs
     ):  
         tokenizer = self.tokenizer
@@ -646,6 +681,8 @@ class LatentMemoryModel(BaseModel):
                 input_ids=batch_input_ids,
                 attention_mask=batch_attention_mask,
                 labels=batch_labels,
+                pixel_values=pixel_values,
+                image_grid_thw=image_grid_thw,
                 **kwargs
             )
             logits.append(batch_logits)
@@ -696,14 +733,22 @@ class LatentMemoryModel(BaseModel):
         do_sample = generation_config.do_sample
         temperature = generation_config.temperature    # control reasoner generate and trigger generate
         pad_token_id = tokenizer.pad_token_id
-        eos_token_id = tokenizer.eos_token_id
+        # Prefer chat end token (<|im_end|>) if available; fall back to tokenizer.eos
+        try:
+            im_end_ids = tokenizer.encode("<|im_end|>", add_special_tokens=False)
+            if isinstance(im_end_ids, list) and len(im_end_ids) == 1:
+                eos_token_id = im_end_ids[0]
+            else:
+                eos_token_id = tokenizer.eos_token_id
+        except Exception:
+            eos_token_id = tokenizer.eos_token_id
         prompt_len = input_ids.size(1)
         generation_config = GenerationConfig(
             do_sample=do_sample,
             temperature=temperature,
             pad_token_id=pad_token_id,
             eos_token_id=eos_token_id,
-            use_cache=True
+            # use_cache=True
         )
         
         with torch.no_grad():
@@ -718,126 +763,128 @@ class LatentMemoryModel(BaseModel):
         
         # Use embedding layer output (hidden_states[0]) as inputs_embeds to ensure compatibility with model's embedding space.
         fused_embeds = outputs.hidden_states[0]  # Embedding output after token & vision embedding projection
-        logging.info(f"Seed embeds shape (from hidden_states[0]): {fused_embeds.shape}")
+        # logging.info(f"Seed embeds shape (from hidden_states[0]): {fused_embeds.shape}")
 
         inputs_embeds = fused_embeds
 
         B, _, hidden_size = inputs_embeds.shape
         device = inputs_embeds.device
 
-        current_inputs_embeds = inputs_embeds
-        current_attention_mask = attention_mask
-        current_position_ids = generate_position_ids(current_attention_mask)
-        current_input_ids = input_ids
-        
-        weaver_inputs_embeds = self.reasoner_to_weaver(current_inputs_embeds)
-        weaver_hidden_states, attn_mask, pos_ids = weaver.augment_prompt(
-            weaver_inputs_embeds, current_attention_mask, current_position_ids
-        )
-        latent_inputs_embeds = self.weaver_to_reasoner(weaver_hidden_states)
+        try:
+            current_inputs_embeds = inputs_embeds
+            current_attention_mask = attention_mask
+            current_position_ids = generate_position_ids(current_attention_mask)
+            current_input_ids = input_ids
 
-        # Concatenate initial augmented prompt
-        current_inputs_embeds = torch.cat([current_inputs_embeds, latent_inputs_embeds], dim=1)
-        current_attention_mask = torch.cat([current_attention_mask, attn_mask], dim=1)
-        current_position_ids = torch.cat([current_position_ids, pos_ids], dim=1)
+            weaver_inputs_embeds = self.reasoner_to_weaver(current_inputs_embeds)
+            weaver_hidden_states, attn_mask, pos_ids = weaver.augment_prompt(
+                weaver_inputs_embeds, current_attention_mask, current_position_ids
+            )
+            latent_inputs_embeds = self.weaver_to_reasoner(weaver_hidden_states)
 
-        # Generation Loop Initialization
-        sentence_augment_count = torch.zeros(B, dtype=torch.int, device=device)
-        augmentation_pos = torch.full((B, max_new_tokens), fill_value=invalid_token_id, device=device)
-        inserted_embeds: List[List[torch.Tensor]] = [[] for _ in range(B)]
-        for i in range(max_new_tokens):
-            
-            # If all sequences in the batch have already generated an EOS token, stop early
-            if (current_input_ids[:, -1] == eos_token_id).all():
-                break   
+            # Concatenate initial augmented prompt
+            current_inputs_embeds = torch.cat([current_inputs_embeds, latent_inputs_embeds], dim=1)
+            current_attention_mask = torch.cat([current_attention_mask, attn_mask], dim=1)
+            current_position_ids = torch.cat([current_position_ids, pos_ids], dim=1)
 
-            # Check if all sequences have reached the maximum number of augmentations
-            if (sentence_augment_count >= max_augment_num).all():
-                # Adjust the remaining generation length
-                generation_config.max_new_tokens = max_new_tokens - i
+            # Generation Loop Initialization
+            sentence_augment_count = torch.zeros(B, dtype=torch.int, device=device)
+            augmentation_pos = torch.full((B, max_new_tokens), fill_value=invalid_token_id, device=device)
+            inserted_embeds: List[List[torch.Tensor]] = [[] for _ in range(B)]
+            for i in range(max_new_tokens):
+                
+                # If all sequences in the batch have already generated an EOS token, stop early
+                if (current_input_ids[:, -1] == eos_token_id).all():
+                    break   
+                
+                # Check if all sequences have reached the maximum number of augmentations
+                if (sentence_augment_count >= max_augment_num).all():
+                    # Adjust the remaining generation length
+                    generation_config.max_new_tokens = max_new_tokens - i
 
-                # Perform generation for the remaining tokens using the reasoner
-                generated = reasoner.generate(
+                    # Perform generation for the remaining tokens using the reasoner
+                    generated = reasoner.generate(
+                        inputs_embeds=current_inputs_embeds,
+                        attention_mask=current_attention_mask,
+                        generation_config=generation_config,
+                    )
+                    current_input_ids = torch.cat([current_input_ids, generated], dim=1)
+                    break
+
+                outputs = reasoner(
                     inputs_embeds=current_inputs_embeds,
                     attention_mask=current_attention_mask,
-                    generation_config=generation_config,
-                    # fix: check if pixel_values and image_grid_thw should be here
-                    # pixel_values=pixel_values,
-                    # image_grid_thw=image_grid_thw,
+                    position_ids=current_position_ids,
+                    output_hidden_states=False,
                 )
-                current_input_ids = torch.cat([current_input_ids, generated], dim=1)
-                break
-
-            outputs = reasoner(
-                inputs_embeds=current_inputs_embeds,
-                attention_mask=current_attention_mask,
-                position_ids=current_position_ids,
-                # pixel_values=pixel_values,
-                # image_grid_thw=image_grid_thw,
-                output_hidden_states=False,
-            )
-            current_inputs_embeds, current_attention_mask, current_position_ids, current_input_ids = self._append_one_step(
-                outputs, current_inputs_embeds, current_attention_mask, current_position_ids, current_input_ids, do_sample, temperature
-            )
+                current_inputs_embeds, current_attention_mask, current_position_ids, current_input_ids = self._append_one_step(
+                    outputs, current_inputs_embeds, current_attention_mask, current_position_ids, current_input_ids, do_sample, temperature
+                )
  
-            if i == max_new_tokens - 1:  
-                break 
+                if i == max_new_tokens - 1:  
+                    break 
 
-            # Determine which sentences in the batch should be augmented
-            augment_decision = self._should_augment(
-                current_input_ids, current_attention_mask, sentence_augment_count=sentence_augment_count, 
-                do_sample=do_sample, temperature=temperature  
-            )
-            augmentation_pos[:, i + 1] = augment_decision
-            augment_indices = torch.where(augment_decision == 1)[0]
-
-            # If there are sentences to augment, apply augmentation; others remain with left padding
-            if len(augment_indices) > 0:
-                # Increment the augmentation count for sentences that are being augmented
-                sentence_augment_count[augment_indices] += 1
-
-                # Select embeddings, attention masks, and position IDs for sentences to be augmented
-                candidate_inputs_embeds = current_inputs_embeds[augment_indices]
-                candidate_attention_mask = current_attention_mask[augment_indices]
-                candidate_position_ids = current_position_ids[augment_indices]
-                
-                # Perform inference augmentation using the weaver
-                weaver_inputs_embeds = self.reasoner_to_weaver(candidate_inputs_embeds)
-                weaver_hidden_states, attn_mask, _ = weaver.augment_inference(
-                    weaver_inputs_embeds, candidate_attention_mask, candidate_position_ids
+                # Determine which sentences in the batch should be augmented
+                augment_decision = self._should_augment(
+                    current_input_ids, current_attention_mask, sentence_augment_count=sentence_augment_count, 
+                    do_sample=do_sample, temperature=temperature  
                 )
-                latent_inputs_embeds = self.weaver_to_reasoner(weaver_hidden_states)
-                
-                candidate_inputs_embeds = torch.cat([candidate_inputs_embeds, latent_inputs_embeds], dim=1)
-                candidate_attention_mask = torch.cat([candidate_attention_mask, attn_mask], dim=1)
-                
-                # Create a single merged tensor for all sequences
-                new_len = candidate_inputs_embeds.size(1)
-                merged_inputs_embeds = torch.zeros((B, new_len, hidden_size), device=device, dtype=current_inputs_embeds.dtype)
-                merged_attention_mask = torch.zeros((B, new_len), device=device, dtype=current_attention_mask.dtype)
-                
-                # Directly place augmented and non-augmented sequences
-                merged_inputs_embeds[augment_indices] = candidate_inputs_embeds
-                merged_attention_mask[augment_indices] = candidate_attention_mask
-                
-                # Non-augmented sequences now include both -100 and 0
-                non_augment_indices = torch.where(augment_decision != 1)[0]
-                if len(non_augment_indices) > 0:
-                    non_aug_inputs_embeds = current_inputs_embeds[non_augment_indices]
-                    non_aug_attention_mask = current_attention_mask[non_augment_indices]
-                    non_aug_inputs_embeds, non_aug_attention_mask, _ = self._left_pad(
-                        non_aug_inputs_embeds, non_aug_attention_mask, None, weaver.inference_latents_num
+                augmentation_pos[:, i + 1] = augment_decision
+                augment_indices = torch.where(augment_decision == 1)[0]
+
+                # If there are sentences to augment, apply augmentation; others remain with left padding
+                if len(augment_indices) > 0:
+                    # Increment the augmentation count for sentences that are being augmented
+                    sentence_augment_count[augment_indices] += 1
+
+                    # Select embeddings, attention masks, and position IDs for sentences to be augmented
+                    candidate_inputs_embeds = current_inputs_embeds[augment_indices]
+                    candidate_attention_mask = current_attention_mask[augment_indices]
+                    candidate_position_ids = current_position_ids[augment_indices]
+                    
+                    # Perform inference augmentation using the weaver
+                    weaver_inputs_embeds = self.reasoner_to_weaver(candidate_inputs_embeds)
+                    weaver_hidden_states, attn_mask, _ = weaver.augment_inference(
+                        weaver_inputs_embeds, candidate_attention_mask, candidate_position_ids
                     )
-                    merged_inputs_embeds[non_augment_indices] = non_aug_inputs_embeds
-                    merged_attention_mask[non_augment_indices] = non_aug_attention_mask
-                
-                current_inputs_embeds = merged_inputs_embeds
-                current_attention_mask = merged_attention_mask
-                current_position_ids = generate_position_ids(current_attention_mask)
-                
-                # Record inserted embeds for post-processing
-                for idx, embed in zip(augment_indices, latent_inputs_embeds):
-                    inserted_embeds[idx].append(embed.clone().detach().cpu())
+                    latent_inputs_embeds = self.weaver_to_reasoner(weaver_hidden_states)
+                    
+                    candidate_inputs_embeds = torch.cat([candidate_inputs_embeds, latent_inputs_embeds], dim=1)
+                    candidate_attention_mask = torch.cat([candidate_attention_mask, attn_mask], dim=1)
+                    
+                    # Create a single merged tensor for all sequences
+                    new_len = candidate_inputs_embeds.size(1)
+                    merged_inputs_embeds = torch.zeros((B, new_len, hidden_size), device=device, dtype=current_inputs_embeds.dtype)
+                    merged_attention_mask = torch.zeros((B, new_len), device=device, dtype=current_attention_mask.dtype)
+                    
+                    # Directly place augmented and non-augmented sequences
+                    merged_inputs_embeds[augment_indices] = candidate_inputs_embeds
+                    merged_attention_mask[augment_indices] = candidate_attention_mask
+                    
+                    # Non-augmented sequences now include both -100 and 0
+                    non_augment_indices = torch.where(augment_decision != 1)[0]
+                    if len(non_augment_indices) > 0:
+                        non_aug_inputs_embeds = current_inputs_embeds[non_augment_indices]
+                        non_aug_attention_mask = current_attention_mask[non_augment_indices]
+                        non_aug_inputs_embeds, non_aug_attention_mask, _ = self._left_pad(
+                            non_aug_inputs_embeds, non_aug_attention_mask, None, weaver.inference_latents_num
+                        )
+                        merged_inputs_embeds[non_augment_indices] = non_aug_inputs_embeds
+                        merged_attention_mask[non_augment_indices] = non_aug_attention_mask
+                    
+                    current_inputs_embeds = merged_inputs_embeds
+                    current_attention_mask = merged_attention_mask
+                    current_position_ids = generate_position_ids(current_attention_mask)
+                    
+                    # Record inserted embeds for post-processing
+                    for idx, embed in zip(augment_indices, latent_inputs_embeds):
+                        inserted_embeds[idx].append(embed.clone().detach().cpu())
+        except Exception:
+            logging.exception(
+                f"[generate] Exception. do_sample={do_sample}, temperature={temperature}, pad_id={pad_token_id}, eos_id={eos_token_id}, "
+                f"pixel_present={pixel_values is not None}, max_new_tokens={max_new_tokens}"
+            )
+            raise
         
         # postprocess
         new_generated_len = current_input_ids.size(1) - prompt_len

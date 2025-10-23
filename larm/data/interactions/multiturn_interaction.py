@@ -22,12 +22,22 @@ class MultiTurnInteractionManager(InteractionManager):
             tokenizer, actor_rollout_wg, config, is_validation
         )
         # generation configs for agent
+        # Prefer chat end token (<|im_end|>) if available for EOS
+        try:
+            im_end_ids = self.tokenizer.encode("<|im_end|>", add_special_tokens=False)
+            if isinstance(im_end_ids, list) and len(im_end_ids) == 1:
+                eos_id = im_end_ids[0]
+            else:
+                eos_id = self.tokenizer.eos_token_id
+        except Exception:
+            eos_id = self.tokenizer.eos_token_id
+
         self.generation_config = GenerationConfig(
             do_sample=self.config.do_sample,
             max_new_tokens=self.config.max_response_length,
             temperature=self.config.temperature,
             pad_token_id=self.tokenizer.pad_token_id,
-            eos_token_id=self.tokenizer.eos_token_id
+            eos_token_id=eos_id
         )    
 
     def _batch_tokenize(self, responses: List[str]) -> torch.Tensor:

@@ -21,12 +21,22 @@ class SingleTurnInteractionManager(InteractionManager):
             tokenizer, actor_rollout_wg, config, is_validation
         )
         # generation configs for agent
+        # Prefer chat end token (<|im_end|>) if available for EOS
+        try:
+            im_end_ids = self.tokenizer.encode("<|im_end|>", add_special_tokens=False)
+            if isinstance(im_end_ids, list) and len(im_end_ids) == 1:
+                eos_id = im_end_ids[0]
+            else:
+                eos_id = self.tokenizer.eos_token_id
+        except Exception:
+            eos_id = self.tokenizer.eos_token_id
+
         self.generation_config = GenerationConfig(
             do_sample=self.config.do_sample,
             max_new_tokens=self.config.max_response_length,
             temperature=self.config.temperature,
             pad_token_id=self.tokenizer.pad_token_id,
-            eos_token_id=self.tokenizer.eos_token_id
+            eos_token_id=eos_id
         )
     
     def _batch_tokenize(self, responses: List[str]) -> torch.Tensor:
@@ -112,7 +122,9 @@ class SingleTurnInteractionManager(InteractionManager):
             generation_config=self.generation_config
         )
         responses_ids = gen_output[:, rollings_active["input_ids"].size(1):]
-        responses_ids = self.tensor_fn.erase_after_first_eos(responses_ids, self.tokenizer.eos_token_id)
+        # Prefer chat_eos_token_id (<|im_end|>) if set, otherwise fallback to tokenizer.eos_token_id
+        eos_id = getattr(self, "chat_eos_token_id", self.tokenizer.eos_token_id)
+        responses_ids = self.tensor_fn.erase_after_first_eos(responses_ids, eos_id)
         
         # update right side
         original_right_side = self._update_right_side(original_right_side, responses_ids, next_obs_ids=None)

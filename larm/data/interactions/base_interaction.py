@@ -44,6 +44,16 @@ class InteractionManager(ABC):
             max_obs_length=config.max_obs_length,
             max_start_length=config.max_start_length
         ))
+
+        # Prefer chat end token (<|im_end|>) as EOS for decoding termination if available
+        try:
+            im_end_ids = self.tokenizer.encode("<|im_end|>", add_special_tokens=False)
+            if isinstance(im_end_ids, list) and len(im_end_ids) == 1:
+                self.chat_eos_token_id = im_end_ids[0]
+            else:
+                self.chat_eos_token_id = self.tokenizer.eos_token_id
+        except Exception:
+            self.chat_eos_token_id = self.tokenizer.eos_token_id
     
     @abstractmethod
     def run_agent_loop(self, gen_batch: InteractionDataProto) -> InteractionDataProto:

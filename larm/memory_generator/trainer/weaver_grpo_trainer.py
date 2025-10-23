@@ -1,4 +1,6 @@
 import copy
+import json
+import logging
 from contextlib import nullcontext
 from typing import Any, Callable, Optional, Union
 
@@ -38,7 +40,8 @@ from larm.data.interactions.base_interaction import (
 from larm.data.envs.base_env import StaticEnv, DynamicEnv
 
 from .utils import (
-    nanstd, nanmax, nanmin
+    nanstd, nanmax, nanmin,
+    init_grpo_log_files, persist_grpo_logs
 )
 from ..memgen_model import LatentMemoryModel
 
@@ -85,15 +88,8 @@ class WeaverGRPOTrainer(GRPOTrainer):
         assert self.max_completion_length == generation_manager.config.max_response_length
         assert self.temperature == generation_manager.config.temperature
         
-        # Initialize GRPO logging file
-        import os
-        self.grpo_log_file = os.path.join(args.output_dir, "grpo_logs.txt")
-        os.makedirs(args.output_dir, exist_ok=True)
-        # Create/clear the log file
-        with open(self.grpo_log_file, "w", encoding="utf-8") as f:
-            f.write("=" * 80 + "\n")
-            f.write("GRPO Training Logs - WeaverGRPOTrainer\n")
-            f.write("=" * 80 + "\n\n")   
+        # Initialize GRPO logging files via utility
+        self.grpo_log_file, self.grpo_jsonl_file = init_grpo_log_files(args.output_dir)
     
     def _build_multiturn_envs(self, inputs: list[dict[str, Union[torch.Tensor, Any]]]) -> tuple[list[list[dict]], list]:
         init_messages, envs = [], []
@@ -183,7 +179,16 @@ class WeaverGRPOTrainer(GRPOTrainer):
         
         # Single-turn env
         if issubclass(self.env_class, StaticEnv):
-            prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
+            prompts_text = []
+            for i, example in enumerate(inputs):
+                try:
+                    prompt_text = maybe_apply_chat_template(example, self.processing_class)["prompt"]
+                except Exception as e:
+                    logging.warning(
+                        f"Bad example at index {i}: {e}. Example type={type(example)}, value preview={repr(example)[:200]}"
+                    )
+                    prompt_text = ""
+                prompts_text.append(prompt_text)
             prompt_inputs = self.processing_class(
                 text=prompts_text, return_tensors="pt", padding=True, padding_side="left", add_special_tokens=False
             )
@@ -307,7 +312,20 @@ class WeaverGRPOTrainer(GRPOTrainer):
         attention_mask = final_gen_batch_output.batch["attention_mask"].to(device)  # attention_mask on prompt and response
         prompt_mask = attention_mask[:, :prompts.size(1)]  
         completion_mask = final_gen_batch_output.batch["info_mask"][:, prompts.size(1):].to(device) 
-        is_eos = completion_ids == self.eos_token_id
+        # Prefer chat EOS (<|im_end|>) if tokenizer supports it
+        _tok = getattr(self.processing_class, "tokenizer", self.processing_class)
+        try:
+            im_end_ids = _tok.encode("<|im_end|>", add_special_tokens=False)
+            if isinstance(im_end_ids, list) and len(im_end_ids) == 1:
+                eos_token_id = im_end_ids[0]
+            else:
+                eos_token_id = _tok.eos_token_id
+        except Exception:
+            eos_token_id = getattr(_tok, "eos_token_id", None)
+            if eos_token_id is None:
+                # Fallback: if eos token id is missing, mark nothing as eos to avoid crashes
+                eos_token_id = -999999
+        is_eos = completion_ids == eos_token_id
         assert completion_ids.shape == completion_mask.shape
 
         # Construct labels: Supervise only the agent response portion.
@@ -356,25 +374,10 @@ class WeaverGRPOTrainer(GRPOTrainer):
             else: 
                 ref_per_token_logps, ref_supervise_mask = None, None
         
-        # Decode the generated completions
+        # Decode prompts and generated completions
+        prompt_texts = self.processing_class.batch_decode(prompts, skip_special_tokens=True)
         completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
         completions = completions_text
-        
-        # Log completions to grpo_logs.txt
-        if self.accelerator.is_main_process:
-            try:
-                with open(self.grpo_log_file, "a", encoding="utf-8") as f:
-                    f.write(f"\n{'='*80}\n")
-                    f.write(f"Step: {self.state.global_step} | Mode: {mode}\n")
-                    f.write(f"{'='*80}\n")
-                    for idx, (prompt_txt, completion_txt) in enumerate(zip(prompts, completions_text)):
-                        f.write(f"\n[Sample {idx}]\n")
-                        f.write(f"Prompt: {prompt_txt}\n")
-                        f.write(f"Completion: {completion_txt}\n")
-                        f.write(f"{'-'*80}\n")
-                    f.flush()
-            except Exception as e:
-                logging.warning(f"Failed to write to GRPO log file: {e}")
         
         # compute rewards
         rewards_per_func = self._calculate_rewards(inputs, prompts, completions, completion_ids_list)
@@ -440,6 +443,33 @@ class WeaverGRPOTrainer(GRPOTrainer):
         for i, name in enumerate(self.reward_func_names):
             self._logs["rewards"][name].extend(rewards_per_func[:, i].tolist())
         self._logs["advantages"].extend(all_process_advantages.tolist())
+
+        # Persist per-sample solution (completion) and rewards via utility
+        try:
+            all_prompt_texts = gather_object(prompt_texts)
+            all_completion_texts = gather_object(completions_text)
+            all_rewards = gather_object(rewards.tolist())
+            all_rewards_by_func = {
+                name: gather_object(rewards_per_func[:, i].tolist())
+                for i, name in enumerate(self.reward_func_names)
+            }
+            all_token_counts = gather_object(completion_lengths.tolist())
+
+            if self.accelerator.is_main_process:
+                persist_grpo_logs(
+                    log_file=self.grpo_log_file,
+                    jsonl_file=self.grpo_jsonl_file,
+                    step=int(self.state.global_step),
+                    mode=mode,
+                    prompt_texts=all_prompt_texts,
+                    completion_texts=all_completion_texts,
+                    rewards=all_rewards,
+                    rewards_by_func=all_rewards_by_func,
+                    token_counts=all_token_counts,
+                    reward_func_names=self.reward_func_names,
+                )
+        except Exception as e:
+            logging.warning(f"Failed to persist GRPO logs: {e}")
 
         return {
             "prompt_ids": prompts,

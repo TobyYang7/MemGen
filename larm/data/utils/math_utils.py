@@ -50,6 +50,9 @@ def is_equiv(str1, str2, verbose=False):
 
 
 def remove_boxed(s):
+    # Robust to None or non-string inputs
+    if not isinstance(s, str):
+        return s
     if "\\boxed " in s:
         left = "\\boxed "
         assert s[: len(left)] == left
@@ -57,8 +60,9 @@ def remove_boxed(s):
 
     left = "\\boxed{"
 
-    assert s[: len(left)] == left
-    assert s[-1] == "}"
+    # If not boxed-format, return as-is to avoid raising
+    if not (s[: len(left)] == left and len(s) > 0 and s[-1] == "}"):
+        return s
 
     return s[len(left) : -1]
 
