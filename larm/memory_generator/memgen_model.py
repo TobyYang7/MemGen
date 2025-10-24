@@ -36,8 +36,7 @@ def log_function_call(func):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         func_name = func.__name__
-        # Blue color ANSI code
-        # logging.info(f"\033[94m[CALL] {func_name}\033[0m")
+        logging.info(f"\033[94m[CALL] {func_name}\033[0m") # blue color
         return func(*args, **kwargs)
     return wrapper
 
@@ -133,6 +132,11 @@ def is_conversation(input_ids: torch.Tensor, tokenizer) -> bool:
     # Check if the sequence contains at least one <|im_start|> and one <|im_end|>
     has_start = any(seq[i:i+len(im_start_ids)] == im_start_ids for i in range(len(seq) - len(im_start_ids) + 1))
     has_end   = any(seq[i:i+len(im_end_ids)]   == im_end_ids   for i in range(len(seq) - len(im_end_ids) + 1))
+    
+    logging.info(f"has_start: {has_start}, has_end: {has_end}")
+    # logging.info(f"seq: {seq}")
+    logging.info(f"im_start_ids: {im_start_ids}")
+    logging.info(f"im_end_ids: {im_end_ids}")
 
     return has_start and has_end
 
@@ -212,18 +216,35 @@ def check_ends_with_delimiter(
     # Initialize result tensor: False by default
     augmentation_decisions = torch.zeros(batch_size, 1, dtype=torch.bool, device=input_ids.device)
 
-    # Decode token IDs to text sequences
-    decoded_inputs = tokenizer.batch_decode(input_ids)
+    # Fast path: compare suffix in token ID space if delimiter id tensors precomputed
+    delimiter_id_tensors = getattr(getattr(tokenizer, "memgen_model_ref", None), "_delimiter_id_tensors", None)
+    if delimiter_id_tensors is None:
+        try:
+            delimiter_id_tensors = [
+                torch.tensor(tokenizer.encode(d, add_special_tokens=False), dtype=torch.long, device=input_ids.device)
+                for d in delimiters
+            ]
+        except Exception:
+            delimiter_id_tensors = []
 
     for i in range(batch_size):
-        ends_with_augment_str = False
-        # Check if the sequence ends with any of the given delimiters
-        for aug_str in delimiters:
-            if decoded_inputs[i].endswith(aug_str):
-                ends_with_augment_str = True
+        seq = input_ids[i]
+        matched = False
+        for did in delimiter_id_tensors:
+            L = did.numel()
+            if L == 0 or L > seq.numel():
+                continue
+            if torch.equal(seq[-L:], did):
+                matched = True
                 break
-        
-        augmentation_decisions[i] = ends_with_augment_str
+        if not matched:
+            # Fallback to decode once when necessary
+            decoded = tokenizer.decode(seq.tolist())
+            for aug_str in delimiters:
+                if decoded.endswith(aug_str):
+                    matched = True
+                    break
+        augmentation_decisions[i] = matched
     
     return augmentation_decisions
 
@@ -287,6 +308,16 @@ class LatentMemoryModel(BaseModel):
         # self.delimiters: List[str] = ["."]  # delimiters for detecting augmentation points
         self.max_prompt_aug_num = max_prompt_aug_num  # insert latents after input prompt
         self.max_inference_aug_num = max_inference_aug_num  # insert latents after specified delimiters
+
+        # Precompute delimiter token ID sequences for fast suffix checks (avoid repeated decode)
+        try:
+            self._delimiter_id_tensors = [
+                torch.tensor(self.tokenizer.encode(d, add_special_tokens=False), dtype=torch.long)
+                for d in self.delimiters
+            ]
+        except Exception:
+            # Fallback: empty list; code path will behave as if no delimiter found
+            self._delimiter_id_tensors = []
 
         # postprocess
         self._postprocess_models()
@@ -421,6 +452,7 @@ class LatentMemoryModel(BaseModel):
         augmentation_indices = self._select_augment_points_after_delimiter(
             input_ids, labels, delimiters, tokenizer, max_augment_num
         )
+        logging.info(f"augmentation_indices: {augmentation_indices}")
         
         # origin inputs embeds (use fused embeddings when image inputs are provided)
         if pixel_values is not None:
@@ -443,6 +475,11 @@ class LatentMemoryModel(BaseModel):
         current_attention_mask = torch.empty((B, 0), device=device, dtype=attention_mask.dtype)
         current_latents_mask = torch.empty((B, 0), device=device, dtype=torch.bool)
 
+        # Prepare incremental weaver-side embeds to avoid re-projecting the whole history
+        current_weaver_inputs_embeds = torch.empty(
+            (B, 0, self.weaver.config.hidden_size), device=device, dtype=self.weaver_to_reasoner.weight.dtype
+        )
+
         # Iterate over the selected augmentation points
         for aug_point_idx in augmentation_indices:
             # Slice the current segment of original embeddings and attention mask
@@ -456,19 +493,22 @@ class LatentMemoryModel(BaseModel):
             current_position_ids = generate_position_ids(current_attention_mask)
             current_latents_mask = torch.cat([current_latents_mask, segment_latents_mask], dim=1)
 
-            # Map reasoner embeddings to weaver embeddings for augmentation
-            weaver_inputs_embeds = self.reasoner_to_weaver(current_inputs_embeds)
+            # Project only the newly added segment to weaver space and append (incremental)
+            segment_weaver_inputs = self.reasoner_to_weaver(segment_inputs_embeds)
+            current_weaver_inputs_embeds = torch.cat([current_weaver_inputs_embeds, segment_weaver_inputs], dim=1)
 
             # Determine whether this point is the end of the prompt (prompt augmentation)
             is_prompt_end_aug = (labels[:, aug_point_idx] != -100).all() and (labels[:, aug_point_idx-1] == -100).all().item()
             # Depending on type, use weaver to augment prompt or inference
             if is_prompt_end_aug:
+                logging.info(f"[augment] idx={aug_point_idx} TYPE=PROMPT")
                 weaver_hidden_states, attn_mask, pos_ids = weaver.augment_prompt(
-                    weaver_inputs_embeds, current_attention_mask, current_position_ids
+                    current_weaver_inputs_embeds, current_attention_mask, current_position_ids
                 )
             else:
+                logging.info(f"[augment] idx={aug_point_idx} TYPE=INFERENCE")
                 weaver_hidden_states, attn_mask, pos_ids = weaver.augment_inference(
-                    weaver_inputs_embeds, current_attention_mask, current_position_ids
+                    current_weaver_inputs_embeds, current_attention_mask, current_position_ids
                 ) 
 
             # Map weaver hidden states back to reasoner embeddings
@@ -482,6 +522,9 @@ class LatentMemoryModel(BaseModel):
             # Update latent mask for the newly added latent embeddings
             latent_mask = torch.ones((B, latent_inputs_embeds.size(1)), device=device, dtype=torch.bool)
             current_latents_mask = torch.cat([current_latents_mask, latent_mask], dim=1)
+
+            # Keep weaver-side embeds in sync by appending the latent hidden states directly
+            current_weaver_inputs_embeds = torch.cat([current_weaver_inputs_embeds, weaver_hidden_states], dim=1)
             
         # Process the remaining segment after the last augmentation point
         remaining_inputs_embeds = inputs_embeds[:, current_start_idx:]
@@ -549,7 +592,7 @@ class LatentMemoryModel(BaseModel):
         # For Instruction SFT, labels remain the same as input
         return logits, labels
 
-    # @log_function_call
+    @log_function_call
     def _conversational_forward(
         self, 
         input_ids: torch.Tensor,
@@ -663,6 +706,7 @@ class LatentMemoryModel(BaseModel):
         forward_func = self._instructional_forward
         if is_conversation(input_ids, tokenizer):
             # For conversational data, mask assistant tokens in labels
+            logging.info("is_conversation: True")
             labels = postprocess_assistant_labels(input_ids, labels, tokenizer)
             forward_func = self._conversational_forward
         
@@ -677,7 +721,7 @@ class LatentMemoryModel(BaseModel):
             batch_labels = labels[i * batch_size: (i + 1) * batch_size]
 
             # Call the appropriate forward function (instruction or conversation)
-            batch_logits, batch_supervised_labels = forward_func(
+            batch_logits, batch_supervised_labels = forward_func( # forward_func --> _forward
                 input_ids=batch_input_ids,
                 attention_mask=batch_attention_mask,
                 labels=batch_labels,
@@ -1118,7 +1162,7 @@ class LatentMemoryModel(BaseModel):
         return aug_mask
 
     
-    @log_function_call
+    # @log_function_call
     @torch.no_grad()
     def _left_pad(
         self,

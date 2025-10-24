@@ -46,9 +46,21 @@ from .utils import (
 from ..memgen_model import LatentMemoryModel
 from .verifier import verify_solution_equivalence
 
+import functools
+
 # What we call a reward function is a callable that takes a list of prompts and completions and returns a list of
 # rewards. When it's a string, it's a model ID, so it's loaded as a pretrained model.
 RewardFunc = Union[str, PreTrainedModel, Callable[[list, list], list[float]]]
+
+# Decorator to log function calls in blue
+def log_function_call(func):
+    """Decorator to log function calls with blue color."""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        func_name = func.__name__
+        logging.info(f"\033[94m[CALL] {func_name}\033[0m") # blue color
+        return func(*args, **kwargs)
+    return wrapper
 
 class WeaverGRPOTrainer(GRPOTrainer):
 
@@ -85,6 +97,13 @@ class WeaverGRPOTrainer(GRPOTrainer):
         self.env_main_config = env_main_config
         self.generation_manager = generation_manager
         
+        # Enforce single-turn mode only
+        if not issubclass(self.env_class, StaticEnv):
+            raise ValueError("WeaverGRPOTrainer is in single-turn mode; please provide a StaticEnv.")
+        # Disable vLLM path in simplified single-turn trainer
+        if getattr(self, "use_vLLM", None) is True or getattr(self, "use_vllm", None) is True:
+            raise ValueError("vLLM path is disabled in single-turn trainer. Please set use_vllm=False.")
+
         assert self.max_prompt_length == generation_manager.config.max_start_length
         assert self.max_completion_length == generation_manager.config.max_response_length
         assert self.temperature == generation_manager.config.temperature
@@ -92,21 +111,8 @@ class WeaverGRPOTrainer(GRPOTrainer):
         # Initialize GRPO logging files via utility
         self.grpo_log_file, self.grpo_jsonl_file = init_grpo_log_files(args.output_dir)
     
-    def _build_multiturn_envs(self, inputs: list[dict[str, Union[torch.Tensor, Any]]]) -> tuple[list[list[dict]], list]:
-        init_messages, envs = [], []
-
-        for task_config in inputs:
-            env: DynamicEnv = self.env_class(self.env_main_config)
-            system_prompt, init_user_prompt = env.set_env(task_config)
-            
-            system_message = {"role": "system", "content": system_prompt}
-            init_user_message = {"role": "user", "content": init_user_prompt}
-            
-            init_messages.append([system_message, init_user_message])
-            envs.append(env)
-        
-        return init_messages, envs
     
+    @log_function_call
     def _get_per_token_logps(
         self, model, 
         input_ids: torch.Tensor, 
@@ -123,7 +129,8 @@ class WeaverGRPOTrainer(GRPOTrainer):
             attention_mask_batch = attention_mask[start : start + batch_size]
 
             # Build model inputs - check if the model supports logits_to_keep (some models and VLMs don't)
-            model_inputs = {"input_ids": input_ids_batch, "attention_mask": attention_mask_batch, "labels": labels}
+            labels_slice = labels[start : start + batch_size]
+            model_inputs = {"input_ids": input_ids_batch, "attention_mask": attention_mask_batch, "labels": labels_slice}
 
             # Only add logits_to_keep if the model supports it
             if "logits_to_keep" in self.model_kwarg_keys:
@@ -132,7 +139,7 @@ class WeaverGRPOTrainer(GRPOTrainer):
 
             outputs = model(**model_inputs)
             logits = outputs.logits
-            labels = outputs.supervised_labels
+            supervised_labels = outputs.supervised_labels
             
             # Exclude the last value: it corresponds to the next token pred
             logits = logits[:, :-1, :]  # (B, L-1, H)
@@ -146,16 +153,15 @@ class WeaverGRPOTrainer(GRPOTrainer):
             logps = selective_log_softmax(logits, completion_ids)  # compute logprobs
             all_logps.append(logps)
             
-            labels = labels[:, -logits_to_keep:]
-            mask = (labels != -100).long()  
+            supervised_labels = supervised_labels[:, -logits_to_keep:]
+            mask = (supervised_labels != -100).long()  
             supervise_masks.append(mask)
 
         logps = torch.cat(all_logps, dim=0)
         masks = torch.cat(supervise_masks, dim=0)
         return logps, masks
 
-
-    # NOTE - currently we only deal with text input and leave multimodal as a feature work
+    @log_function_call
     def _generate_and_score_completions(
         self, inputs: list[dict[str, Union[torch.Tensor, Any]]]  # batch_size * num_generations
     ) -> dict[str, Union[torch.Tensor, Any]]:
@@ -178,134 +184,42 @@ class WeaverGRPOTrainer(GRPOTrainer):
         for key in batch_gen_keys:  
             gen_batch.no_tensor_batch[key] = [x[key] for x in inputs]
         
-        # Single-turn env
-        if issubclass(self.env_class, StaticEnv):
-            prompts_text = []
-            for i, example in enumerate(inputs):
-                try:
-                    prompt_text = maybe_apply_chat_template(example, self.processing_class)["prompt"]
-                except Exception as e:
-                    logging.warning(
-                        f"Bad example at index {i}: {e}. Example type={type(example)}, value preview={repr(example)[:200]}"
-                    )
-                    prompt_text = ""
-                prompts_text.append(prompt_text)
-            prompt_inputs = self.processing_class(
-                text=prompts_text, return_tensors="pt", padding=True, padding_side="left", add_special_tokens=False
-            )
-                
-            prompts, prompt_mask = prompt_inputs["input_ids"].to(device), prompt_inputs["attention_mask"].to(device)
-            if self.max_prompt_length is not None:
-                prompts = prompts[:, -self.max_prompt_length :]
-                prompt_mask = prompt_mask[:, -self.max_prompt_length :]
+        if not issubclass(self.env_class, StaticEnv):
+            raise ValueError("Single-turn mode only: DynamicEnv is not supported.")
 
-            gen_batch.batch["input_ids"] = prompts 
-            gen_batch.batch["attention_mask"] = prompt_mask
-        # Multi-turn env
-        elif issubclass(self.env_class, DynamicEnv):
-            init_prompts, envs = self._build_multiturn_envs(inputs)
-            gen_batch.no_tensor_batch["init_prompts"] = init_prompts
-            gen_batch.no_tensor_batch["envs"] = envs
+        prompts_text = []
+        for i, example in enumerate(inputs):
+            try:
+                prompt_text = maybe_apply_chat_template(example, self.processing_class)["prompt"]
+            except Exception as e:
+                logging.warning(
+                    f"Bad example at index {i}: {e}. Example type={type(example)}, value preview={repr(example)[:200]}"
+                )
+                prompt_text = ""
+            prompts_text.append(prompt_text)
+        prompt_inputs = self.processing_class(
+            text=prompts_text, return_tensors="pt", padding=True, padding_side="left", add_special_tokens=False
+        )
             
-            for example, env in zip(inputs, envs):
-                example["envs"] = env
-        else:
-            raise ValueError("Unsupported environment type")
-        # Generate completions using either vLLM or regular generation
-        if self.use_vllm:
-            # First, update the vLLM weights if needed
-            if self.state.global_step != self._last_loaded_step:
-                self._move_model_to_vllm()
-                self._last_loaded_step = self.state.global_step
+        prompts, prompt_mask = prompt_inputs["input_ids"].to(device), prompt_inputs["attention_mask"].to(device)
+        if self.max_prompt_length is not None:
+            prompts = prompts[:, -self.max_prompt_length :]
+            prompt_mask = prompt_mask[:, -self.max_prompt_length :]
 
-            # Generate completions using vLLM: gather all prompts and use them in a single call in the main process
-            if self.vllm_mode == "server":
-                all_prompts_text = gather_object(prompts_text)
-                if self.accelerator.is_main_process:
-                    # Since 'prompts' contains 'num_generations' duplicates, we first take unique prompts, and generate
-                    # num_generations outputs for each one. This is faster than generating outputs for each duplicate
-                    # prompt individually.
-                    ordered_set_of_prompts = all_prompts_text[:: self.num_generations]
-                    with profiling_context(self, "vLLM.generate"):
-                        completion_ids = self.vllm_client.generate(
-                            prompts=ordered_set_of_prompts,
-                            n=self.num_generations,
-                            repetition_penalty=self.repetition_penalty,
-                            temperature=self.temperature,
-                            top_p=self.top_p,
-                            top_k=-1 if self.top_k is None else self.top_k,
-                            min_p=0.0 if self.min_p is None else self.min_p,
-                            max_tokens=self.max_completion_length,
-                            guided_decoding_regex=self.guided_decoding_regex,
-                        )
-                else:
-                    completion_ids = [None] * len(all_prompts_text)
-                # Broadcast the completions from the main process to all processes, ensuring each process receives its
-                # corresponding slice.
-                completion_ids = broadcast_object_list(completion_ids, from_process=0)
-                process_slice = slice(
-                    self.accelerator.process_index * len(prompts),
-                    (self.accelerator.process_index + 1) * len(prompts),
-                )
-                completion_ids = completion_ids[process_slice]
-
-            # Generate completions using colocated vLLM instances: each device holds vLLM copy and work on their own batch of prompts
-            elif self.vllm_mode == "colocate":
-                if self.guided_decoding_regex:
-                    guided_decoding = GuidedDecodingParams(backend="outlines", regex=self.guided_decoding_regex)
-                else:
-                    guided_decoding = None
-                sampling_params = SamplingParams(
-                    n=1,  # vLLM on each GPU generates only 1 in colocate mode
-                    repetition_penalty=self.repetition_penalty,
-                    temperature=self.temperature,
-                    top_p=self.top_p,
-                    top_k=-1 if self.top_k is None else self.top_k,
-                    min_p=0.0 if self.min_p is None else self.min_p,
-                    max_tokens=self.max_completion_length,
-                    guided_decoding=guided_decoding,
-                )
-
-                if self.vllm_tensor_parallel_size > 1:
-                    # Gather prompts from all ranks in the TP group and flatten.
-                    # Each rank starts with its own prompts; after gathering, all ranks see the full group set.
-                    orig_size = len(prompts_text)
-                    gathered_prompts = [None for _ in range(self.vllm_tensor_parallel_size)]
-                    torch.distributed.all_gather_object(gathered_prompts, prompts_text, group=self.tp_group)
-                    all_prompts_text = [p for sublist in gathered_prompts for p in sublist]
-                else:
-                    all_prompts_text = prompts_text
-
-                with profiling_context(self, "vLLM.generate"):
-                    all_outputs = self.llm.generate(all_prompts_text, sampling_params=sampling_params, use_tqdm=False)
-
-                completion_ids = [output.token_ids for outputs in all_outputs for output in outputs.outputs]
-
-                if self.vllm_tensor_parallel_size > 1:
-                    # Slice completions for this rank within its TP group.
-                    # Each rank generates all outputs — we keep only our share.
-                    local_rank_in_group = torch.distributed.get_rank(group=self.tp_group)
-                    tp_slice = slice(local_rank_in_group * orig_size, (local_rank_in_group + 1) * orig_size)
-                    completion_ids = completion_ids[tp_slice]
-
-            # Pad the completions, and concatenate them with the prompts
-            completion_ids = [torch.tensor(ids, device=device) for ids in completion_ids]
-            completion_ids = pad(completion_ids, padding_value=self.processing_class.pad_token_id)
-            prompt_completion_ids = torch.cat([prompts, completion_ids], dim=1)
-        else:
-            # Regular generation path
-            with unwrap_model_for_generation(
-                self.model_wrapped, self.accelerator, gather_deepspeed3_params=self.args.ds3_gather_for_generation
-            ) as unwrapped_model:
-                with (
-                    FSDP.summon_full_params(self.model_wrapped, recurse=False)
-                    if self.is_fsdp_enabled
-                    else nullcontext()
-                ):
-                    # Use GenerationManager to coordinate the interaction between the agent and the environment
-                    self.generation_manager.actor_rollout_wg = unwrapped_model  
-                    final_gen_batch_output = self.generation_manager.run_agent_loop(gen_batch=gen_batch)
-        
+        gen_batch.batch["input_ids"] = prompts 
+        gen_batch.batch["attention_mask"] = prompt_mask
+        # Regular generation path only (vLLM disabled in single-turn trainer)
+        with unwrap_model_for_generation(
+            self.model_wrapped, self.accelerator, gather_deepspeed3_params=self.args.ds3_gather_for_generation
+        ) as unwrapped_model:
+            with (
+                FSDP.summon_full_params(self.model_wrapped, recurse=False)
+                if self.is_fsdp_enabled
+                else nullcontext()
+            ):
+                # Use GenerationManager to coordinate the interaction between the agent and the environment
+                self.generation_manager.actor_rollout_wg = unwrapped_model  
+                final_gen_batch_output = self.generation_manager.run_agent_loop(gen_batch=gen_batch)
         # parse outputs
         prompts = final_gen_batch_output.batch["prompts"].to(device)  # prompt ids
         completion_ids = final_gen_batch_output.batch["responses"].to(device)  # completion ids
@@ -517,7 +431,7 @@ class WeaverGRPOTrainer(GRPOTrainer):
             "ref_supervise_mask": ref_supervise_mask
         }
 
-
+    @log_function_call
     def _compute_loss(self, model, inputs):
         device = self.accelerator.device
 

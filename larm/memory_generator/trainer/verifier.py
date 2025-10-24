@@ -111,7 +111,7 @@ def verify_solution_equivalence(solution: str, ground_truth: str) -> bool:
                 temperature=0,
             )
             parsed: EquivalenceResult = resp.choices[0].message.parsed
-            logging.info(f"\x1b[92mParsed response: {bool(parsed.equivalent)}\x1b[0m")
+            logging.info(f"\x1b[32mParsed response: {bool(parsed.equivalent)}\x1b[0m")
             return bool(parsed.equivalent)
     except Exception as e:
         logging.error(f"Error verifying solution equivalence: {e}")

@@ -371,14 +371,14 @@ def main():
         # Note: output_dir defaults to data/mm_math (not cache_path from config)
         output_dir = args.output_dir or "data/mm_math"
         cache_dir = args.cache_dir or ".cache/mm_math"
-        image_root = args.image_root or yaml_config.get('image_root') or "data/mm_math/images"
+        image_root = args.image_root or yaml_config.get('image_root') or "dataset/mm_math/images/MM_Math"
         val_ratio = args.val_ratio if args.val_ratio is not None else yaml_config.get('val_ratio', 0.05)
         test_ratio = args.test_ratio if args.test_ratio is not None else yaml_config.get('test_ratio', 0.05)
     else:
         # Use command-line arguments or defaults
         output_dir = args.output_dir or "data/mm_math"
         cache_dir = args.cache_dir or ".cache/mm_math"
-        image_root = args.image_root or "data/mm_math/images"
+        image_root = args.image_root or "dataset/mm_math/images/MM_Math"
         val_ratio = args.val_ratio if args.val_ratio is not None else 0.05
         test_ratio = args.test_ratio if args.test_ratio is not None else 0.05
 

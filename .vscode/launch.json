@@ -148,9 +148,9 @@
             },
             "args": [
                 "--cfg", "configs/latent_memory/mm_math.yaml",
-                "--text", "Describe this image in detail.",
+                "--text", "Describe this image.",
                 "--image", "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg",
-                "--max_new_tokens", "256",
+                "--max_new_tokens", "1024",
                 "--temperature", "1",
                 "--do_sample",
                 "--options",

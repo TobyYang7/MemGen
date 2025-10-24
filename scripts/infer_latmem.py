@@ -168,13 +168,40 @@ def main():
         )
     if isinstance(outputs, tuple):  # when return_augmentation_mask=True
         outputs = outputs[0]
-    generated_ids = outputs[0].detach().cpu()
-    # Filter out placeholder ids (e.g., -100) that may be inserted during generation
-    valid_token_ids = [tid for tid in generated_ids.tolist() if tid >= 0]
-    text = processor.tokenizer.decode(valid_token_ids, skip_special_tokens=True)
+    full_ids = outputs[0].detach().cpu()
+    prompt_len = input_ids.size(1)
 
-    print("\n===== MODEL OUTPUT =====\n")
-    print(text)
+    # 5.a Only the assistant completion (clean)
+    gen_only = full_ids[prompt_len:]
+    gen_only_valid = [tid for tid in gen_only.tolist() if tid >= 0]
+    clean_text = processor.tokenizer.decode(gen_only_valid, skip_special_tokens=True)
+    print("\n===== ASSISTANT (clean) =====\n")
+    print(clean_text)
+
+    # 5.b Only after the last <|image_pad|> token
+    image_pad_id = processor.tokenizer.convert_tokens_to_ids("<|image_pad|>")
+    ids_list = full_ids.tolist()
+    try:
+        last_pad_idx = len(ids_list) - 1 - ids_list[::-1].index(image_pad_id)
+        start_after_skip = last_pad_idx + 1
+    except ValueError:
+        start_after_skip = 0
+    sliced_after_skip = ids_list[start_after_skip:]
+    # Also remove any residual <|image_pad|> that might appear later
+    filtered_after_skip = [tid for tid in sliced_after_skip if tid != image_pad_id]
+    raw_text_with_markers = processor.tokenizer.decode(filtered_after_skip, skip_special_tokens=False)
+    print("\n===== RAW (after <|image_pad|>, with special tokens) =====\n")
+    print(raw_text_with_markers)
+
+    # # 5.c Token-by-token dump (ids + tokens)
+    # dump_limit = full_ids.numel()
+    # print("\n===== TOKEN DUMP (after <|image_pad|>, skip <|image_pad|>) =====")
+    # for idx in range(start_after_skip, dump_limit):
+    #     tid = int(full_ids[idx].item())
+    #     if tid == image_pad_id:
+    #         continue
+    #     tok = processor.tokenizer.decode([tid], skip_special_tokens=False)
+    #     print(f"[{idx:04d}] id={tid:<8} token={tok}")
 
 
 if __name__ == "__main__":
