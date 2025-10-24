@@ -44,6 +44,7 @@ from .utils import (
     init_grpo_log_files, persist_grpo_logs
 )
 from ..memgen_model import LatentMemoryModel
+from .verifier import verify_solution_equivalence
 
 # What we call a reward function is a callable that takes a list of prompts and completions and returns a list of
 # rewards. When it's a string, it's a model ID, so it's loaded as a pretrained model.
@@ -454,8 +455,37 @@ class WeaverGRPOTrainer(GRPOTrainer):
                 for i, name in enumerate(self.reward_func_names)
             }
             all_token_counts = gather_object(completion_lengths.tolist())
+            # Gather ground truths from inputs (dataset label)
+            all_ground_truths = gather_object([ex.get("solution", "") for ex in inputs])
+            # Build stop reasons using EOS detection (True => eos, False => max_tokens)
+            try:
+                eos_flags = agg_terminated_with_eos.detach().cpu().tolist()
+                all_stop_reasons = ["eos" if bool(f) else "max_tokens" for f in eos_flags]
+            except Exception:
+                all_stop_reasons = ["unknown"] * len(all_completion_texts)
+
+            # Helper to extract content inside <answer>...</answer>
+            def _extract_answer(text: str) -> str:
+                try:
+                    low = text.lower()
+                    s = low.find("<answer>")
+                    e = low.find("</answer>")
+                    if s != -1 and e != -1 and e > s:
+                        return text[s + len("<answer>") : e].strip()
+                except Exception:
+                    pass
+                return ""
 
             if self.accelerator.is_main_process:
+                # Compute extracted solutions and verify flags on main process
+                all_solutions_extracted = [_extract_answer(t) for t in all_completion_texts]
+                all_verifies = []
+                for sol, gt in zip(all_solutions_extracted, all_ground_truths):
+                    try:
+                        verdict = verify_solution_equivalence(sol, gt)
+                    except Exception:
+                        verdict = False
+                    all_verifies.append(verdict)
                 persist_grpo_logs(
                     log_file=self.grpo_log_file,
                     jsonl_file=self.grpo_jsonl_file,
@@ -466,6 +496,10 @@ class WeaverGRPOTrainer(GRPOTrainer):
                     rewards=all_rewards,
                     rewards_by_func=all_rewards_by_func,
                     token_counts=all_token_counts,
+                    ground_truths=all_ground_truths,
+                    solutions_extracted=all_solutions_extracted,
+                    verifies=all_verifies,
+                    stop_reasons=all_stop_reasons,
                     reward_func_names=self.reward_func_names,
                 )
         except Exception as e:

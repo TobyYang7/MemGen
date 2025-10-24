@@ -14,3 +14,4 @@ test_output/
 model/
 results/
 dataset/
+.env

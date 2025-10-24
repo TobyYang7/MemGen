@@ -85,7 +85,11 @@ def persist_grpo_logs(
     rewards: list[float],
     rewards_by_func: dict[str, list[float]],
     token_counts: list[int],
+    ground_truths: list[str] | None,
+    solutions_extracted: list[str] | None,
+    verifies: list[bool] | None,
     reward_func_names: list[str],
+    stop_reasons: list[str] | None = None,
 ) -> None:
     """
     Append per-sample human-readable and JSONL logs for GRPO.
@@ -102,6 +106,10 @@ def persist_grpo_logs(
         rewards = _flatten(rewards)
         token_counts = _flatten(token_counts)
         rewards_by_func = {k: _flatten(v) for k, v in rewards_by_func.items()}
+        stop_reasons = _flatten(stop_reasons) if stop_reasons is not None else None
+        ground_truths = _flatten(ground_truths) if ground_truths is not None else None
+        solutions_extracted = _flatten(solutions_extracted) if solutions_extracted is not None else None
+        verifies = _flatten(verifies) if verifies is not None else None
 
         # Guard against length mismatches
         n = min(
@@ -109,7 +117,11 @@ def persist_grpo_logs(
             len(completion_texts),
             len(rewards),
             len(token_counts),
-            *[len(rewards_by_func[name]) for name in reward_func_names]
+            *[len(rewards_by_func[name]) for name in reward_func_names],
+            *( [len(ground_truths)] if ground_truths is not None else [] ),
+            *( [len(solutions_extracted)] if solutions_extracted is not None else [] ),
+            *( [len(verifies)] if verifies is not None else [] ),
+            *( [len(stop_reasons)] if stop_reasons is not None else [] ),
         )
         if n == 0:
             return
@@ -124,21 +136,47 @@ def persist_grpo_logs(
                 r_total = rewards[idx]
                 f_txt.write(f"\n[Sample {idx}]\n")
                 f_txt.write(f"Prompt: {p_txt}\n")
-                f_txt.write(f"Completion: {c_txt}\n")
                 comp_str = ", ".join([f"{name}: {float(rewards_by_func[name][idx]):.6f}" for name in reward_func_names])
                 f_txt.write(f"Reward: {float(r_total):.6f} | Components: {comp_str}\n")
+                if ground_truths is not None:
+                    f_txt.write(f"Ground truth: {ground_truths[idx]}\n")
+                if solutions_extracted is not None:
+                    f_txt.write(f"Solution: {solutions_extracted[idx]}\n")
+                if verifies is not None:
+                    f_txt.write(f"Verify: {bool(verifies[idx])}\n")
+                s_reason = (
+                    stop_reasons[idx]
+                    if stop_reasons is not None and idx < len(stop_reasons)
+                    else "unknown"
+                )
+                f_txt.write(f"Stop reason: {s_reason}\n")
+                # Always place completion last in the per-sample block
+                f_txt.write(f"Completion: {c_txt}\n")
                 f_txt.write(f"{'-'*80}\n")
 
         with open(jsonl_file, "a", encoding="utf-8") as f_jsonl:
             for idx in range(n):
+                s_reason = (
+                    stop_reasons[idx]
+                    if stop_reasons is not None and idx < len(stop_reasons)
+                    else "unknown"
+                )
                 record = {
                     "reward": float(rewards[idx]),
                     "token_count": int(token_counts[idx]),
-                    "step": int(step),
-                    "mode": mode,
-                    "sample_index": int(idx),
-                    "completion": completion_texts[idx],
+                    # "step": int(step),
+                    # "mode": mode,
+                    # "sample_index": int(idx),
+                    "stop_reason": s_reason,
                 }
+                if ground_truths is not None:
+                    record["ground_truth"] = ground_truths[idx]
+                if solutions_extracted is not None:
+                    record["solution"] = solutions_extracted[idx]
+                if verifies is not None:
+                    record["verify"] = bool(verifies[idx])
+                # Ensure completion is always the last field
+                record["completion"] = completion_texts[idx]
                 f_jsonl.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception as e:
         logging.warning(f"Failed to persist GRPO logs: {e}")
