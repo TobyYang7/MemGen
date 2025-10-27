@@ -408,11 +408,15 @@ class LatentMemoryModel(BaseModel):
             self.processor.tokenizer.pad_token_id = self.tokenizer.pad_token_id
             self.processor.tokenizer.bos_token_id = self.tokenizer.bos_token_id
             self.processor.tokenizer.eos_token_id = self.tokenizer.eos_token_id
-            # Also set chat template for processor's tokenizer
-            self.processor.tokenizer.chat_template = CONVERSATION_TEMPLATE
+            # IMPORTANT: Do NOT override VLM chat templates; they encode image placeholders.
+            is_vlm = isinstance(self.model, Qwen2_5_VLForConditionalGeneration) or hasattr(self.processor, 'image_processor')
+            if not is_vlm:
+                self.processor.tokenizer.chat_template = CONVERSATION_TEMPLATE
 
-        # Normalize the tokenizer's chat template
-        self.tokenizer.chat_template = CONVERSATION_TEMPLATE
+        # Normalize the tokenizer's chat template (skip for VLMs)
+        is_vlm = isinstance(self.model, Qwen2_5_VLForConditionalGeneration) or hasattr(getattr(self, 'processor', None), 'image_processor')
+        if not is_vlm:
+            self.tokenizer.chat_template = CONVERSATION_TEMPLATE
         
         logging.info(
             f"Synchronized special tokens - pad_token_id: {self.tokenizer.pad_token_id}, "

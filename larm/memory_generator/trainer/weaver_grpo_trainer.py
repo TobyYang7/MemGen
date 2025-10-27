@@ -5,6 +5,7 @@ from contextlib import nullcontext
 from typing import Any, Callable, Optional, Union
 
 import torch
+from PIL import Image
 from accelerate.utils import broadcast_object_list, gather, gather_object, is_peft_model, set_seed
 from datasets import Dataset, IterableDataset
 from torch import nn
@@ -41,7 +42,8 @@ from larm.data.envs.base_env import StaticEnv, DynamicEnv
 
 from .utils import (
     nanstd, nanmax, nanmin,
-    init_grpo_log_files, persist_grpo_logs
+    init_grpo_log_files, persist_grpo_logs,
+    log_prompt_truncation
 )
 from ..memgen_model import LatentMemoryModel
 from .verifier import verify_solution_equivalence
@@ -110,7 +112,6 @@ class WeaverGRPOTrainer(GRPOTrainer):
         
         # Initialize GRPO logging files via utility
         self.grpo_log_file, self.grpo_jsonl_file = init_grpo_log_files(args.output_dir)
-    
     
     @log_function_call
     def _get_per_token_logps(
@@ -188,6 +189,9 @@ class WeaverGRPOTrainer(GRPOTrainer):
             raise ValueError("Single-turn mode only: DynamicEnv is not supported.")
 
         prompts_text = []
+        messages_list = []
+        images_list = []
+        any_image = False
         for i, example in enumerate(inputs):
             try:
                 prompt_text = maybe_apply_chat_template(example, self.processing_class)["prompt"]
@@ -197,17 +201,112 @@ class WeaverGRPOTrainer(GRPOTrainer):
                 )
                 prompt_text = ""
             prompts_text.append(prompt_text)
-        prompt_inputs = self.processing_class(
-            text=prompts_text, return_tensors="pt", padding=True, padding_side="left", add_special_tokens=False
-        )
+
+            # Try to load image if present
+            img = None
+            try:
+                image_path = example.get("image_path") if isinstance(example, dict) else None
+                if image_path is not None:
+                    img = Image.open(image_path).convert("RGB")
+            except Exception as e:
+                logging.warning(f"Failed to load image for sample {i}: {e}")
+
+            if img is not None:
+                any_image = True
+                messages_list.append({
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": img},
+                        {"type": "text", "text": prompt_text},
+                    ],
+                })
+                images_list.append(img)
+            else:
+                messages_list.append({
+                    "role": "user",
+                    "content": prompt_text,
+                })
+                images_list.append(None)
+
+        # Prefer model.processor when available for VLMs
+        processor = getattr(self.model, "processor", None)
+        proc = processor if processor is not None else self.processing_class
+
+        # If mixing image/no-image in one batch is detected, raise error (do not fallback)
+        if any_image and any(x is None for x in images_list):
+            logging.error("\033[91m[ERROR] Mixed image and text-only samples detected in the same batch. "
+                          "Please group samples by modality (all-with-image or all-text).\033[0m")
+            raise ValueError("Mixed image and text-only samples in one batch are not supported. Group by modality.")
+
+        # Build encodings
+        if hasattr(proc, "apply_chat_template"):
+            # Ensure each call receives a list of messages
+            texts = [proc.apply_chat_template([m], tokenize=False, add_generation_prompt=True) for m in messages_list]
+        else:
+            # Fallback: use the plain prompt texts
+            texts = prompts_text
+
+        if any_image:
+            enc = proc(
+                text=texts,
+                images=images_list,
+                return_tensors="pt",
+                padding=True,
+            )
+        else:
+            enc = proc(
+                text=texts,
+                return_tensors="pt",
+                padding=True,
+            )
+
+        prompt_inputs = enc
             
-        prompts, prompt_mask = prompt_inputs["input_ids"].to(device), prompt_inputs["attention_mask"].to(device)
-        if self.max_prompt_length is not None:
-            prompts = prompts[:, -self.max_prompt_length :]
-            prompt_mask = prompt_mask[:, -self.max_prompt_length :]
+        prompts_before_truncation = prompt_inputs["input_ids"].to(device)
+        prompt_mask_before_truncation = prompt_inputs["attention_mask"].to(device)
+        
+        # Log original prompt info
+        logging.info(f"[PROMPT INFO] Original prompt shape: {prompts_before_truncation.shape}, max_prompt_length: {self.max_prompt_length}")
+        
+        prompts, prompt_mask = prompts_before_truncation, prompt_mask_before_truncation
+        # Do NOT truncate when vision inputs are present; truncation may break image-token alignment.
+        has_pixels = isinstance(prompt_inputs, dict) and ("pixel_values" in prompt_inputs)
+        if self.max_prompt_length is not None and not has_pixels:
+            # prompts = prompts[:, -self.max_prompt_length :]
+            # prompt_mask = prompt_mask[:, -self.max_prompt_length :]
+            
+            logging.info(f"[PROMPT INFO] After truncation shape: {prompts.shape}")
+            
+            # Log prompt truncation for the first sample in the batch
+            # Check if actual content was truncated (not just padding)
+            if prompts_before_truncation.size(1) > self.max_prompt_length:
+                logging.info(f"[PROMPT INFO] Truncation detected: {prompts_before_truncation.size(1)} -> {prompts.size(1)}")
+                if self.accelerator.is_main_process:
+                    log_prompt_truncation(
+                        prompts_before=prompts_before_truncation,
+                        prompts_after=prompts,
+                        prompt_mask_before=prompt_mask_before_truncation,
+                        prompt_mask_after=prompt_mask,
+                        processing_class=self.processing_class,
+                        max_prompt_length=self.max_prompt_length,
+                        sample_idx=0
+                    )
+            else:
+                logging.info(f"[PROMPT INFO] No truncation needed: length {prompts_before_truncation.size(1)} <= max {self.max_prompt_length}")
+        elif has_pixels:
+            logging.info("[PROMPT INFO] Vision inputs detected; skipping prompt truncation to preserve image tokens.")
 
         gen_batch.batch["input_ids"] = prompts 
         gen_batch.batch["attention_mask"] = prompt_mask
+        # Attach image tensors if present from processor encoding
+        if "pixel_values" in prompt_inputs:
+            try:
+                gen_batch.batch["pixel_values"] = prompt_inputs["pixel_values"].to(device).to(torch.bfloat16)
+            except Exception:
+                gen_batch.batch["pixel_values"] = prompt_inputs["pixel_values"].to(device)
+        if "image_grid_thw" in prompt_inputs:
+            gen_batch.batch["image_grid_thw"] = prompt_inputs["image_grid_thw"].to(device)
+        
         # Regular generation path only (vLLM disabled in single-turn trainer)
         with unwrap_model_for_generation(
             self.model_wrapped, self.accelerator, gather_deepspeed3_params=self.args.ds3_gather_for_generation

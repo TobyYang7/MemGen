@@ -75,6 +75,256 @@ def init_grpo_log_files(output_dir: str) -> tuple[str, str]:
     return grpo_log_file, grpo_jsonl_file
 
 
+def log_prompt_truncation(
+    prompts_before: torch.Tensor,
+    prompts_after: torch.Tensor,
+    prompt_mask_before: torch.Tensor,
+    prompt_mask_after: torch.Tensor,
+    processing_class,
+    max_prompt_length: int,
+    sample_idx: int = 0
+) -> None:
+    """
+    Log prompt before and after truncation in token format.
+    Also checks if image/vision tokens were truncated.
+    
+    Args:
+        prompts_before: Prompt token IDs before truncation [batch_size, seq_len_before]
+        prompts_after: Prompt token IDs after truncation [batch_size, seq_len_after]
+        prompt_mask_before: Attention mask before truncation
+        prompt_mask_after: Attention mask after truncation
+        processing_class: Tokenizer or processor for decoding
+        max_prompt_length: Maximum prompt length configured
+        sample_idx: Index of sample to log (default: 0, first sample in batch)
+    """
+    # Get tokenizer
+    _tok = getattr(processing_class, "tokenizer", processing_class)
+    
+    # Check for vision/image tokens - use known IDs directly
+    # Qwen2.5-VL vision token IDs:
+    # 151652: <|vision_start|>
+    # 151653: <|vision_end|>  
+    # 151654: <|video_pad|>
+    # 151655: <|image_pad|>
+    vision_token_ids = [151652, 151653, 151654, 151655]
+    
+    # Also try to get them from tokenizer
+    vision_token_names = ["<|vision_start|>", "<|vision_end|>", "<|image_pad|>", "<|video_pad|>", "<|vision_pad|>"]
+    for token_name in vision_token_names:
+        try:
+            token_id = _tok.encode(token_name, add_special_tokens=False)
+            if isinstance(token_id, list) and len(token_id) > 0:
+                if token_id[0] not in vision_token_ids:
+                    vision_token_ids.append(token_id[0])
+        except Exception:
+            pass
+    
+    # Extract single sample
+    prompt_before = prompts_before[sample_idx]
+    prompt_after = prompts_after[sample_idx]
+    mask_before = prompt_mask_before[sample_idx]
+    mask_after = prompt_mask_after[sample_idx]
+    
+    # Filter out padding tokens (where mask == 0)
+    valid_tokens_before = prompt_before[mask_before.bool()].tolist()
+    valid_tokens_after = prompt_after[mask_after.bool()].tolist()
+    
+    # Check if vision tokens were truncated
+    vision_tokens_before = set(valid_tokens_before) & set(vision_token_ids)
+    vision_tokens_after = set(valid_tokens_after) & set(vision_token_ids)
+    vision_tokens_lost = vision_tokens_before - vision_tokens_after
+    has_vision_loss = len(vision_tokens_lost) > 0
+    
+    # Convert token IDs to readable format with special tokens
+    def tokens_to_readable(token_ids):
+        """Convert token IDs to readable string with special tokens visible."""
+        # ANSI escape codes for colors
+        GREEN = "\033[92m"
+        RESET = "\033[0m"
+        
+        tokens = []
+        prev_tid = None
+        consecutive_count = 0
+        
+        for tid in token_ids:
+            try:
+                # Decode single token
+                token_str = _tok.decode([tid], skip_special_tokens=False)
+                
+                # Check if this is image_pad (151655) or other vision pad tokens
+                is_image_pad = tid == 151655 or (tid in vision_token_ids and 'pad' in token_str.lower())
+                
+                # If consecutive image_pad tokens, just count them
+                if is_image_pad and prev_tid == tid:
+                    consecutive_count += 1
+                    continue
+                else:
+                    # Output the previous consecutive tokens if any
+                    if consecutive_count > 0 and prev_tid is not None:
+                        prev_str = _tok.decode([prev_tid], skip_special_tokens=False)
+                        tokens.append(f"{GREEN}[IMG]{prev_str.strip()}[/IMG]{RESET}×{consecutive_count + 1}")
+                        consecutive_count = 0
+                    
+                    # Highlight vision tokens
+                    if tid in vision_token_ids:
+                        if is_image_pad:
+                            prev_tid = tid
+                            consecutive_count = 0
+                            continue  # Will be added in next iteration or at the end
+                        else:
+                            tokens.append(f"{GREEN}[IMG]{token_str.strip()}[/IMG]{RESET}")
+                    # Show special tokens
+                    elif tid == _tok.pad_token_id:
+                        tokens.append(f"<|pad|>")
+                    elif tid == _tok.eos_token_id:
+                        tokens.append(f"<|eos|>")
+                    elif tid == _tok.bos_token_id:
+                        tokens.append(f"<|bos|>")
+                    elif token_str.strip() in ["<|im_start|>", "<|im_end|>", "<|im_sep|>"]:
+                        tokens.append(token_str.strip())
+                    else:
+                        tokens.append(f"[{tid}:{repr(token_str)}]")
+                    
+                    prev_tid = tid
+            except Exception:
+                tokens.append(f"[{tid}:?]")
+                prev_tid = tid
+        
+        # Handle any remaining consecutive tokens at the end
+        if consecutive_count > 0 and prev_tid is not None:
+            try:
+                prev_str = _tok.decode([prev_tid], skip_special_tokens=False)
+                tokens.append(f"{GREEN}[IMG]{prev_str.strip()}[/IMG]{RESET}×{consecutive_count + 1}")
+            except Exception:
+                pass
+        
+        return " ".join(tokens)
+    
+    # Log information
+    logging.info("=" * 80)
+    logging.info(f"[PROMPT TRUNCATION] Sample {sample_idx}")
+    logging.info(f"Length before truncation: {len(valid_tokens_before)}")
+    logging.info(f"Length after truncation: {len(valid_tokens_after)}")
+    logging.info(f"Max prompt length: {max_prompt_length}")
+    logging.info(f"Tokens truncated: {len(valid_tokens_before) - len(valid_tokens_after)}")
+    
+    # Warn if vision tokens were lost
+    if has_vision_loss:
+        logging.warning("⚠️  WARNING: IMAGE/VISION TOKENS WERE TRUNCATED!")
+        logging.warning(f"⚠️  Lost vision token IDs: {vision_tokens_lost}")
+        logging.warning(f"⚠️  Vision tokens before: {vision_tokens_before}")
+        logging.warning(f"⚠️  Vision tokens after: {vision_tokens_after}")
+        logging.warning("⚠️  The model will NOT see the image information!")
+    elif len(vision_tokens_before) > 0:
+        logging.info(f"✓ Vision tokens preserved: {vision_tokens_before}")
+    
+    logging.info("-" * 80)
+    
+    # Log tokens before truncation
+    logging.info("[BEFORE TRUNCATION]")
+    tokens_before_str = tokens_to_readable(valid_tokens_before)
+    logging.info(f"Tokens: {tokens_before_str}")
+    # logging.info(f"Decoded text: {_tok.decode(valid_tokens_before, skip_special_tokens=False)}")
+    logging.info("-" * 80)
+    
+    # Log tokens after truncation
+    logging.info("[AFTER TRUNCATION]")
+    tokens_after_str = tokens_to_readable(valid_tokens_after)
+    logging.info(f"Tokens: {tokens_after_str}")
+    # logging.info(f"Decoded text: {_tok.decode(valid_tokens_after, skip_special_tokens=False)}")
+    logging.info("=" * 80)
+
+
+def log_rollout_input(
+    prompts: torch.Tensor,
+    prompt_mask: torch.Tensor,
+    processing_class,
+    sample_idx: int = 0
+) -> None:
+    """
+    Log the input tokens before model generation (rollout).
+    
+    Args:
+        prompts: Prompt token IDs [batch_size, seq_len]
+        prompt_mask: Attention mask [batch_size, seq_len]
+        processing_class: Tokenizer or processor for decoding
+        sample_idx: Index of sample to log (default: 0, first sample in batch)
+    """
+    # Get tokenizer
+    _tok = getattr(processing_class, "tokenizer", processing_class)
+    
+    # Check for vision/image tokens
+    vision_token_names = ["<|vision_start|>", "<|vision_end|>", "<|image_pad|>", "<|video_pad|>", "<|vision_pad|>"]
+    vision_token_ids = []
+    for token_name in vision_token_names:
+        try:
+            token_id = _tok.encode(token_name, add_special_tokens=False)
+            if isinstance(token_id, list) and len(token_id) > 0:
+                vision_token_ids.append(token_id[0])
+        except Exception:
+            pass
+    
+    # Extract single sample
+    prompt = prompts[sample_idx]
+    mask = prompt_mask[sample_idx]
+    
+    # Filter out padding tokens
+    valid_tokens = prompt[mask.bool()].tolist()
+    
+    # Check for vision tokens
+    vision_tokens_present = set(valid_tokens) & set(vision_token_ids)
+    has_vision = len(vision_tokens_present) > 0
+    
+    # Convert token IDs to readable format
+    def tokens_to_readable(token_ids):
+        """Convert token IDs to readable string with special tokens visible."""
+        # ANSI escape codes for colors
+        GREEN = "\033[92m"
+        RESET = "\033[0m"
+        
+        tokens = []
+        for tid in token_ids:
+            try:
+                token_str = _tok.decode([tid], skip_special_tokens=False)
+                # Highlight vision tokens
+                if tid in vision_token_ids:
+                    tokens.append(f"{GREEN}[IMG]{token_str.strip()}[/IMG]{RESET}")
+                # Show special tokens
+                elif tid == _tok.pad_token_id:
+                    tokens.append(f"<|pad|>")
+                elif tid == _tok.eos_token_id:
+                    tokens.append(f"<|eos|>")
+                elif tid == _tok.bos_token_id:
+                    tokens.append(f"<|bos|>")
+                elif token_str.strip() in ["<|im_start|>", "<|im_end|>", "<|im_sep|>"]:
+                    tokens.append(token_str.strip())
+                else:
+                    tokens.append(f"[{tid}:{repr(token_str)}]")
+            except Exception:
+                tokens.append(f"[{tid}:?]")
+        return " ".join(tokens)
+    
+    # Log information
+    logging.info("=" * 80)
+    logging.info(f"[ROLLOUT INPUT] Sample {sample_idx}")
+    logging.info(f"Prompt length: {len(valid_tokens)} tokens")
+    logging.info(f"Batch shape: {prompts.shape}")
+    
+    if has_vision:
+        logging.info(f"✓ Contains vision tokens: {vision_tokens_present}")
+    else:
+        logging.info("ℹ️  No vision tokens detected (text-only prompt)")
+    
+    logging.info("-" * 80)
+    
+    # Log tokens
+    logging.info("[INPUT TOKENS]")
+    tokens_str = tokens_to_readable(valid_tokens)
+    logging.info(f"Tokens: {tokens_str}")
+    logging.info(f"Decoded text: {_tok.decode(valid_tokens, skip_special_tokens=False)}")
+    logging.info("=" * 80)
+
+
 def persist_grpo_logs(
     log_file: str,
     jsonl_file: str,

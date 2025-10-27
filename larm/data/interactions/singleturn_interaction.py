@@ -1,4 +1,5 @@
 import torch
+import logging
 from typing import Dict, List
 from transformers import GenerationConfig
 
@@ -99,28 +100,122 @@ class SingleTurnInteractionManager(InteractionManager):
         
         return {'responses': responses[:, :max_len], 'responses_with_info_mask': responses_with_info_mask[:, :max_len]}
     
+    def _log_generation_input(self, input_ids: torch.Tensor, attention_mask: torch.Tensor, sample_idx: int = 0):
+        """Log the actual input tokens passed to model.generate()."""
+        try:
+            # Check for vision/image tokens - use known IDs directly
+            # Qwen2.5-VL vision token IDs:
+            # 151652: <|vision_start|>
+            # 151653: <|vision_end|>  
+            # 151654: <|video_pad|>
+            # 151655: <|image_pad|>
+            vision_token_ids = [151652, 151653, 151654, 151655]
+            
+            # Also try to get them from tokenizer
+            vision_token_names = ["<|vision_start|>", "<|vision_end|>", "<|image_pad|>", "<|video_pad|>", "<|vision_pad|>"]
+            for token_name in vision_token_names:
+                try:
+                    token_id = self.tokenizer.encode(token_name, add_special_tokens=False)
+                    if isinstance(token_id, list) and len(token_id) > 0:
+                        if token_id[0] not in vision_token_ids:
+                            vision_token_ids.append(token_id[0])
+                except Exception:
+                    pass
+            
+            logging.info(f"[DEBUG] Vision token IDs to check: {vision_token_ids}")
+            
+            # Extract single sample
+            sample_ids = input_ids[sample_idx]
+            sample_mask = attention_mask[sample_idx]
+            
+            # Filter out padding tokens
+            valid_tokens = sample_ids[sample_mask.bool()].tolist()
+            
+            # Debug: show unique token IDs in the input
+            unique_tokens = set(valid_tokens)
+            logging.info(f"[DEBUG] Total unique token IDs in input: {len(unique_tokens)}")
+            logging.info(f"[DEBUG] Token ID range: {min(valid_tokens)} to {max(valid_tokens)}")
+            
+            # Check for vision tokens
+            vision_tokens_present = set(valid_tokens) & set(vision_token_ids)
+            has_vision = len(vision_tokens_present) > 0
+            
+            # Debug: check if any tokens are in the vision range
+            vision_range_tokens = [t for t in valid_tokens if 151650 <= t <= 151660]
+            if vision_range_tokens:
+                logging.info(f"[DEBUG] Found tokens in vision range (151650-151660): {set(vision_range_tokens)}")
+            
+            # Log
+            logging.info("=" * 80)
+            logging.info(f"[MODEL.GENERATE INPUT] Sample {sample_idx}")
+            logging.info(f"Input length: {len(valid_tokens)} tokens")
+            logging.info(f"Batch shape: {input_ids.shape}")
+            
+            if has_vision:
+                logging.info(f"✓ Contains vision tokens: {vision_tokens_present}")
+            else:
+                logging.info("ℹ️  No vision tokens (text-only)")
+            
+            # logging.info("-" * 80)
+            # logging.info("[TOKENS TO MODEL]")
+            # logging.info(f"Decoded: {self.tokenizer.decode(valid_tokens, skip_special_tokens=False)}")
+            # logging.info("=" * 80)
+        except Exception as e:
+            logging.warning(f"Failed to log generation input: {e}")
+    
     def run_agent_loop(self, gen_batch: InteractionDataProto) -> InteractionDataProto:
         
         initial_input_ids = gen_batch.batch["input_ids"]
-        original_left_side = {'input_ids': initial_input_ids[:, -self.config.max_start_length:]}
+        has_pixels = "pixel_values" in gen_batch.batch
+        # Do NOT truncate prompts when vision inputs are present to preserve image tokens
+        if has_pixels:
+            original_left_side = {'input_ids': initial_input_ids}
+        else:
+            original_left_side = {'input_ids': initial_input_ids[:, -self.config.max_start_length:]}
         original_right_side = {'responses': initial_input_ids[:, []], 'responses_with_info_mask': initial_input_ids[:, []]}
 
         # postprocess model inputs
         rollings = gen_batch
-        rollings.batch = self.tensor_fn.cut_to_effective_len(
-            rollings.batch,
-            keys=['input_ids', 'attention_mask']    
-        )
-        rollings_active = {
-            k: v for k, v in rollings.batch.items()
-        }  
+        if has_pixels:
+            # Keep full sequence to maintain alignment between image features and tokens
+            rollings_active = {k: v for k, v in rollings.batch.items()}
+        else:
+            rollings.batch = self.tensor_fn.cut_to_effective_len(
+                rollings.batch,
+                keys=['input_ids', 'attention_mask']    
+            )
+            rollings_active = {k: v for k, v in rollings.batch.items()}  
 
-        # model generation
-        gen_output = self.actor_rollout_wg.generate(
-            rollings_active["input_ids"], 
-            rollings_active["attention_mask"], 
-            generation_config=self.generation_config
-        )
+        # Log tokens before actual model generation
+        self._log_generation_input(rollings_active["input_ids"], rollings_active["attention_mask"])
+
+        # Log image paths if present
+        if "image_paths" in gen_batch.no_tensor_batch:
+            image_paths = gen_batch.no_tensor_batch["image_paths"]
+            if any(path is not None for path in image_paths):
+                logging.info(f"[Image Paths in Batch] {image_paths}")
+
+        # model generation (pass image tensors if available)
+        gen_kwargs = {
+            "input_ids": rollings_active["input_ids"],
+            "attention_mask": rollings_active["attention_mask"],
+            "generation_config": self.generation_config,
+        }
+        if "pixel_values" in rollings_active:
+            gen_kwargs["pixel_values"] = rollings_active["pixel_values"]
+        if "image_grid_thw" in rollings_active:
+            gen_kwargs["image_grid_thw"] = rollings_active["image_grid_thw"]
+
+        # Log shapes right before generate
+        logging.info("[Final Shapes before model.generate]")
+        logging.info(f"  input_ids: {gen_kwargs['input_ids'].shape}")
+        logging.info(f"  attention_mask: {gen_kwargs['attention_mask'].shape}")
+        if "pixel_values" in gen_kwargs:
+            logging.info(f"  pixel_values: {gen_kwargs['pixel_values'].shape}")
+        if "image_grid_thw" in gen_kwargs:
+            logging.info(f"  image_grid_thw: {gen_kwargs['image_grid_thw'].shape}")
+
+        gen_output = self.actor_rollout_wg.generate(**gen_kwargs)
         responses_ids = gen_output[:, rollings_active["input_ids"].size(1):]
         # Prefer chat_eos_token_id (<|im_end|>) if set, otherwise fallback to tokenizer.eos_token_id
         eos_id = getattr(self, "chat_eos_token_id", self.tokenizer.eos_token_id)
