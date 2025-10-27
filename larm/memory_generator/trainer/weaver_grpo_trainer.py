@@ -120,8 +120,26 @@ class WeaverGRPOTrainer(GRPOTrainer):
         attention_mask: torch.Tensor,
         labels: torch.Tensor, 
         logits_to_keep: int,
-        batch_size: int = None
+        batch_size: int = None,
+        pixel_values: torch.Tensor = None,
+        image_grid_thw: torch.Tensor = None
     ) -> torch.Tensor:
+        logging.info(f"[GRAD DEBUG _get_per_token_logps] Called with pixel_values: {pixel_values is not None}, image_grid_thw: {image_grid_thw is not None}")
+        if pixel_values is not None:
+            logging.info(f"[GRAD DEBUG _get_per_token_logps] pixel_values shape: {pixel_values.shape}, requires_grad: {pixel_values.requires_grad}")
+        logging.info(f"[GRAD DEBUG _get_per_token_logps] model.training: {model.training}")
+        
+        # Check if model parameters have gradients
+        trainable_params = sum(p.requires_grad for p in model.parameters())
+        total_params = sum(1 for _ in model.parameters())
+        logging.info(f"[GRAD DEBUG _get_per_token_logps] Model params: {trainable_params}/{total_params} trainable")
+        
+        # Check weaver training status
+        if hasattr(model, 'weaver') and model.weaver is not None:
+            weaver_trainable = sum(p.requires_grad for p in model.weaver.parameters())
+            weaver_total = sum(1 for _ in model.weaver.parameters())
+            logging.info(f"[GRAD DEBUG _get_per_token_logps] Weaver params: {weaver_trainable}/{weaver_total} trainable, weaver.training: {model.weaver.training}")
+        
         batch_size = batch_size or input_ids.size(0)  # Chunk inputs into smaller batches to reduce memory peak
         all_logps = []
         supervise_masks = []   
@@ -133,6 +151,14 @@ class WeaverGRPOTrainer(GRPOTrainer):
             labels_slice = labels[start : start + batch_size]
             model_inputs = {"input_ids": input_ids_batch, "attention_mask": attention_mask_batch, "labels": labels_slice}
 
+            # Add vision inputs if present (for weaver/VLM models)
+            if pixel_values is not None:
+                pixel_values_batch = pixel_values[start : start + batch_size]
+                model_inputs["pixel_values"] = pixel_values_batch
+            if image_grid_thw is not None:
+                image_grid_thw_batch = image_grid_thw[start : start + batch_size]
+                model_inputs["image_grid_thw"] = image_grid_thw_batch
+
             # Only add logits_to_keep if the model supports it
             if "logits_to_keep" in self.model_kwarg_keys:
                 # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
@@ -141,6 +167,11 @@ class WeaverGRPOTrainer(GRPOTrainer):
             outputs = model(**model_inputs)
             logits = outputs.logits
             supervised_labels = outputs.supervised_labels
+            
+            # Debug: Check gradient status
+            logging.info(f"[GRAD DEBUG] logits.requires_grad: {logits.requires_grad}, has grad_fn: {logits.grad_fn is not None}")
+            if hasattr(outputs, 'pixel_values') or 'pixel_values' in model_inputs:
+                logging.info(f"[GRAD DEBUG] Vision inputs present in forward pass")
             
             # Exclude the last value: it corresponds to the next token pred
             logits = logits[:, :-1, :]  # (B, L-1, H)
@@ -152,6 +183,7 @@ class WeaverGRPOTrainer(GRPOTrainer):
 
             completion_ids = input_ids_batch[:, -logits_to_keep:]
             logps = selective_log_softmax(logits, completion_ids)  # compute logprobs
+            logging.info(f"[GRAD DEBUG] logps.requires_grad: {logps.requires_grad}, has grad_fn: {logps.grad_fn is not None}")
             all_logps.append(logps)
             
             supervised_labels = supervised_labels[:, -logits_to_keep:]
@@ -299,13 +331,21 @@ class WeaverGRPOTrainer(GRPOTrainer):
         gen_batch.batch["input_ids"] = prompts 
         gen_batch.batch["attention_mask"] = prompt_mask
         # Attach image tensors if present from processor encoding
+        vision_pixel_values = None
+        vision_image_grid_thw = None
         if "pixel_values" in prompt_inputs:
             try:
-                gen_batch.batch["pixel_values"] = prompt_inputs["pixel_values"].to(device).to(torch.bfloat16)
+                vision_pixel_values = prompt_inputs["pixel_values"].to(device).to(torch.bfloat16)
             except Exception:
-                gen_batch.batch["pixel_values"] = prompt_inputs["pixel_values"].to(device)
+                vision_pixel_values = prompt_inputs["pixel_values"].to(device)
+            gen_batch.batch["pixel_values"] = vision_pixel_values
+            logging.info(f"[GRAD DEBUG _generate] vision_pixel_values shape: {vision_pixel_values.shape}, requires_grad: {vision_pixel_values.requires_grad}")
         if "image_grid_thw" in prompt_inputs:
-            gen_batch.batch["image_grid_thw"] = prompt_inputs["image_grid_thw"].to(device)
+            vision_image_grid_thw = prompt_inputs["image_grid_thw"].to(device)
+            gen_batch.batch["image_grid_thw"] = vision_image_grid_thw
+            logging.info(f"[GRAD DEBUG _generate] vision_image_grid_thw shape: {vision_image_grid_thw.shape}")
+        
+        logging.info(f"[GRAD DEBUG _generate] Saving vision tensors - pixel_values: {vision_pixel_values is not None}, image_grid_thw: {vision_image_grid_thw is not None}")
         
         # Regular generation path only (vLLM disabled in single-turn trainer)
         with unwrap_model_for_generation(
@@ -367,9 +407,12 @@ class WeaverGRPOTrainer(GRPOTrainer):
             # When using num_iterations == 1 and steps_per_generation <= gradient_accumulation_steps
             # old_per_token_logps == per_token_logps, so we can skip it's computation here, and use
             # per_token_logps.detach() instead.
+            # NOTE: Do NOT pass vision inputs when computing logps on prompt+completion sequences,
+            # as the vision grid info is only valid for the original prompt length.
             if self.num_iterations > 1 or self.args.steps_per_generation > self.args.gradient_accumulation_steps:
                 old_per_token_logps, old_supervise_mask = self._get_per_token_logps( 
-                    self.model, prompt_completion_ids, attention_mask, labels, logits_to_keep
+                    self.model, prompt_completion_ids, attention_mask, labels, logits_to_keep,
+                    pixel_values=None, image_grid_thw=None
                 )
             else:
                 old_per_token_logps, old_supervise_mask = None, None
@@ -378,12 +421,14 @@ class WeaverGRPOTrainer(GRPOTrainer):
             if self.beta != 0.0:
                 if self.ref_model is not None:
                     ref_per_token_logps, ref_supervise_mask = self._get_per_token_logps(
-                        self.ref_model, prompt_completion_ids, attention_mask, labels, logits_to_keep
+                        self.ref_model, prompt_completion_ids, attention_mask, labels, logits_to_keep,
+                        pixel_values=None, image_grid_thw=None
                     )
                 else:
                     with self.accelerator.unwrap_model(self.model).disable_adapter():
                         ref_per_token_logps, ref_supervise_mask = self._get_per_token_logps(
-                            self.model, prompt_completion_ids, attention_mask, labels, logits_to_keep
+                            self.model, prompt_completion_ids, attention_mask, labels, logits_to_keep,
+                            pixel_values=None, image_grid_thw=None
                         )
             else: 
                 ref_per_token_logps, ref_supervise_mask = None, None
@@ -527,7 +572,9 @@ class WeaverGRPOTrainer(GRPOTrainer):
             "old_per_token_logps": old_per_token_logps,
             "old_supervise_mask": old_supervise_mask,   
             "ref_per_token_logps": ref_per_token_logps,
-            "ref_supervise_mask": ref_supervise_mask
+            "ref_supervise_mask": ref_supervise_mask,
+            "pixel_values": vision_pixel_values,
+            "image_grid_thw": vision_image_grid_thw
         }
 
     @log_function_call
@@ -537,6 +584,10 @@ class WeaverGRPOTrainer(GRPOTrainer):
         prompt_ids, prompt_mask = inputs["prompt_ids"], inputs["prompt_mask"]
         completion_ids, completion_mask = inputs["completion_ids"], inputs["completion_mask"]
         old_supervise_mask, ref_supervise_mask = inputs["old_supervise_mask"], inputs["ref_supervise_mask"]
+        # Get vision inputs if present (for weaver/VLM models)
+        pixel_values = inputs.get("pixel_values", None)
+        image_grid_thw = inputs.get("image_grid_thw", None)
+        
         input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
 
@@ -548,7 +599,24 @@ class WeaverGRPOTrainer(GRPOTrainer):
         assert prompt_ids.shape == prompt_mask.shape
         assert completion_ids.shape == completion_mask.shape
         assert input_ids.shape == attention_mask.shape == labels.shape
-        per_token_logps, supervise_mask = self._get_per_token_logps(model, input_ids, attention_mask, labels, logits_to_keep)
+        
+        # Debug: Check vision inputs
+        logging.info(f"[GRAD DEBUG _compute_loss] pixel_values: {pixel_values is not None}, image_grid_thw: {image_grid_thw is not None}")
+        if pixel_values is not None:
+            logging.info(f"[GRAD DEBUG _compute_loss] pixel_values shape: {pixel_values.shape}, requires_grad: {pixel_values.requires_grad}")
+        
+        # IMPORTANT: Do NOT pass vision inputs to _compute_loss forward pass
+        # Vision inputs (pixel_values, image_grid_thw) are based on the original prompt,
+        # but input_ids here contains prompt+completion which has a different length.
+        # This mismatch causes index out of bounds errors in the vision encoder.
+        # Vision processing is only needed during generation, not during loss computation.
+        per_token_logps, supervise_mask = self._get_per_token_logps(
+            model, input_ids, attention_mask, labels, logits_to_keep,
+            pixel_values=None, image_grid_thw=None
+        )
+        logging.info(f"[GRAD DEBUG _compute_loss] Called _get_per_token_logps WITHOUT vision inputs to avoid index mismatch")
+        
+        logging.info(f"[GRAD DEBUG _compute_loss] per_token_logps.requires_grad: {per_token_logps.requires_grad}, has grad_fn: {per_token_logps.grad_fn is not None}")
         
         # Compute the KL divergence between the model and the reference model
         if self.beta != 0.0:
@@ -559,13 +627,18 @@ class WeaverGRPOTrainer(GRPOTrainer):
 
         # Compute the loss
         advantages = inputs["advantages"]
+        logging.info(f"[GRAD DEBUG _compute_loss] advantages.requires_grad: {advantages.requires_grad}, shape: {advantages.shape}")
+        
         # When using num_iterations == 1 and steps_per_generation <= gradient_accumulation_steps
         # old_per_token_logps == per_token_logps, so we can skip it's computation
         # (see _generate_and_score_completions) and use per_token_logps.detach() instead.
         old_per_token_logps = (
             per_token_logps.detach() if inputs["old_per_token_logps"] is None else inputs["old_per_token_logps"]
         )
+        logging.info(f"[GRAD DEBUG _compute_loss] old_per_token_logps.requires_grad: {old_per_token_logps.requires_grad}")
+        
         coef_1 = torch.exp(per_token_logps - old_per_token_logps)
+        logging.info(f"[GRAD DEBUG _compute_loss] coef_1.requires_grad: {coef_1.requires_grad}, has grad_fn: {coef_1.grad_fn is not None}")
         coef_2 = torch.clamp(coef_1, 1 - self.epsilon_low, 1 + self.epsilon_high)
 
         # Two-sided clipping
@@ -589,6 +662,9 @@ class WeaverGRPOTrainer(GRPOTrainer):
             torch.all(ref_supervise_mask <= completion_mask)
         )
         supervised_mask = completion_mask * supervise_mask * old_supervise_mask * ref_supervise_mask  
+        
+        logging.info(f"[GRAD DEBUG _compute_loss] per_token_loss.requires_grad: {per_token_loss.requires_grad}, has grad_fn: {per_token_loss.grad_fn is not None}")
+        logging.info(f"[GRAD DEBUG _compute_loss] supervised_mask sum: {supervised_mask.sum().item()}, completion_mask sum: {completion_mask.sum().item()}")
 
         if self.loss_type == "grpo":
             loss = ((per_token_loss * supervised_mask).sum(-1) / supervised_mask.sum(-1).clamp(min=1.0)).mean()
@@ -598,6 +674,8 @@ class WeaverGRPOTrainer(GRPOTrainer):
             loss = (per_token_loss * supervised_mask).sum() / (supervised_mask.size(0) * self.max_completion_length)
         else:
             raise ValueError(f"Unknown loss type: {self.loss_type}")
+
+        logging.info(f"[GRAD DEBUG _compute_loss] FINAL loss.requires_grad: {loss.requires_grad}, has grad_fn: {loss.grad_fn is not None}, loss value: {loss.item()}")
 
         # Log the metrics
         mode = "train" if self.model.training else "eval"

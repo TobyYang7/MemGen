@@ -651,12 +651,21 @@ class LatentMemoryModel(BaseModel):
             start = e
         
         # If there are more segments than allowed, randomly select self.max_prompt_aug_num segments
-        if len(triplets) <= self.max_prompt_aug_num:
+        # IMPORTANT: During GRPO training (weaver training), we MUST supervise all turns consistently
+        # to ensure that supervision masks match across multiple forward passes.
+        # Only apply random sampling when training the reasoner (not the weaver).
+        if self.training and hasattr(self, 'weaver') and self.weaver is not None and self.weaver.training:
+            # Training weaver (GRPO): supervise ALL turns for consistency
+            select_turns = [1] * len(triplets)
+            logging.info(f"[SUPERVISE DEBUG] Weaver training mode: supervising ALL {len(triplets)} turns")
+        elif len(triplets) <= self.max_prompt_aug_num:
             select_turns = [1] * len(triplets)
         else:
             triplets_num = len(triplets)
             selected_indices = set(random.sample(range(triplets_num), self.max_prompt_aug_num))
             select_turns = [1 if i in selected_indices else 0 for i in range(triplets_num)]
+        
+        logging.info(f"[SUPERVISE DEBUG] len(triplets): {len(triplets)}, max_prompt_aug_num: {self.max_prompt_aug_num}, select_turns: {select_turns}, training: {self.training}")
 
         # Initialize tensors to store logits and labels for the entire sequence
         all_logits = torch.zeros(1, seq_len, vocab_size, device=device)
@@ -689,6 +698,7 @@ class LatentMemoryModel(BaseModel):
         # Return logits and labels:
         # - supervised positions retain computed logits and original labels
         # - unsupervised positions have logits = 0 and labels = -100
+        logging.info(f"[SUPERVISE DEBUG] all_labels non-(-100) count: {(all_labels != -100).sum().item()}, total: {all_labels.numel()}")
         return all_logits, all_labels
 
     @log_function_call
