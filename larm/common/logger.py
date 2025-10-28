@@ -49,12 +49,16 @@ def setup_logger(output_dir):
     # Clear existing handlers to avoid duplicate logs if called multiple times
     root_logger.handlers = []
 
-    # Console handler with colors
-    stream_handler = logging.StreamHandler()
-    stream_handler.setLevel(base_level)
-    stream_formatter = ColorFormatter("%(asctime)s [%(levelname)s] %(message)s")
-    stream_handler.setFormatter(stream_formatter)
-    root_logger.addHandler(stream_handler)
+    # Check if file-only logging is enabled via environment variable
+    file_only = os.getenv("LOG_FILE_ONLY", "").lower() in ("1", "true", "yes")
+
+    # Console handler with colors (only if not file-only mode)
+    if not file_only:
+        stream_handler = logging.StreamHandler()
+        stream_handler.setLevel(base_level)
+        stream_formatter = ColorFormatter("%(asctime)s [%(levelname)s] %(message)s")
+        stream_handler.setFormatter(stream_formatter)
+        root_logger.addHandler(stream_handler)
 
     # File handler without colors
     file_handler = logging.FileHandler(os.path.join(output_dir, 'log.txt'))
@@ -62,3 +66,9 @@ def setup_logger(output_dir):
     file_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
     file_handler.setFormatter(file_formatter)
     root_logger.addHandler(file_handler)
+
+    # Log the current mode
+    if file_only:
+        root_logger.info("Logger initialized in FILE-ONLY mode (console output disabled via LOG_FILE_ONLY)")
+    else:
+        root_logger.info(f"Logger initialized (output_dir: {output_dir})")

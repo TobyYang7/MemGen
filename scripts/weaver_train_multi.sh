@@ -9,6 +9,7 @@ export NCCL_IB_DISABLE=1
 export NCCL_P2P_DISABLE=0
 export NCCL_ASYNC_DISABLE=1
 export TORCH_DISTRIBUTED_DEBUG=OFF
+export LOG_FILE_ONLY=1
 
 # train
 uv run python -m accelerate.commands.launch \

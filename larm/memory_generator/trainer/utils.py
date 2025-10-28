@@ -433,8 +433,9 @@ def persist_grpo_logs(
                 # Add image_path before completion
                 if image_paths is not None:
                     record["image_path"] = image_paths[idx]
-                # Ensure completion is always the last field
+                # Add completion and prompt at the end
                 record["completion"] = completion_texts[idx]
+                record["prompt"] = prompt_texts[idx]
                 f_jsonl.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception as e:
         logging.warning(f"Failed to persist GRPO logs: {e}")
