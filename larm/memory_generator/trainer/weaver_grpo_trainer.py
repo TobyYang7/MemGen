@@ -1,4 +1,5 @@
 import copy
+import gc
 import json
 import logging
 from contextlib import nullcontext
@@ -113,6 +114,20 @@ class WeaverGRPOTrainer(GRPOTrainer):
         # Initialize GRPO logging files via utility
         self.grpo_log_file, self.grpo_jsonl_file = init_grpo_log_files(args.output_dir)
     
+    def training_step(self, model, inputs, num_items_in_batch=None):
+        """
+        Perform a training step on a batch of inputs, with memory cleanup after each step.
+        """
+        # Call the parent class's training_step
+        loss = super().training_step(model, inputs, num_items_in_batch)
+        
+        # Clear memory after each training step
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+        
+        return loss
+    
     @log_function_call
     def _get_per_token_logps(
         self, model, 
@@ -138,7 +153,7 @@ class WeaverGRPOTrainer(GRPOTrainer):
         if hasattr(model, 'weaver') and model.weaver is not None:
             weaver_trainable = sum(p.requires_grad for p in model.weaver.parameters())
             weaver_total = sum(1 for _ in model.weaver.parameters())
-            logging.info(f"[GRAD DEBUG _get_per_token_logps] Weaver params: {weaver_trainable}/{weaver_total} trainable, weaver.training: {model.weaver.training}")
+            # logging.info(f"[GRAD DEBUG _get_per_token_logps] Weaver params: {weaver_trainable}/{weaver_total} trainable, weaver.training: {model.weaver.training}")
         
         batch_size = batch_size or input_ids.size(0)  # Chunk inputs into smaller batches to reduce memory peak
         all_logps = []
@@ -339,13 +354,13 @@ class WeaverGRPOTrainer(GRPOTrainer):
             except Exception:
                 vision_pixel_values = prompt_inputs["pixel_values"].to(device)
             gen_batch.batch["pixel_values"] = vision_pixel_values
-            logging.info(f"[GRAD DEBUG _generate] vision_pixel_values shape: {vision_pixel_values.shape}, requires_grad: {vision_pixel_values.requires_grad}")
+            # logging.info(f"[GRAD DEBUG _generate] vision_pixel_values shape: {vision_pixel_values.shape}, requires_grad: {vision_pixel_values.requires_grad}")
         if "image_grid_thw" in prompt_inputs:
             vision_image_grid_thw = prompt_inputs["image_grid_thw"].to(device)
             gen_batch.batch["image_grid_thw"] = vision_image_grid_thw
-            logging.info(f"[GRAD DEBUG _generate] vision_image_grid_thw shape: {vision_image_grid_thw.shape}")
+            # logging.info(f"[GRAD DEBUG _generate] vision_image_grid_thw shape: {vision_image_grid_thw.shape}")
         
-        logging.info(f"[GRAD DEBUG _generate] Saving vision tensors - pixel_values: {vision_pixel_values is not None}, image_grid_thw: {vision_image_grid_thw is not None}")
+        # logging.info(f"[GRAD DEBUG _generate] Saving vision tensors - pixel_values: {vision_pixel_values is not None}, image_grid_thw: {vision_image_grid_thw is not None}")
         
         # Regular generation path only (vLLM disabled in single-turn trainer)
         with unwrap_model_for_generation(
@@ -359,6 +374,11 @@ class WeaverGRPOTrainer(GRPOTrainer):
                 # Use GenerationManager to coordinate the interaction between the agent and the environment
                 self.generation_manager.actor_rollout_wg = unwrapped_model  
                 final_gen_batch_output = self.generation_manager.run_agent_loop(gen_batch=gen_batch)
+        
+        # Clear memory after generation (inference only, no gradients needed)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
         # parse outputs
         prompts = final_gen_batch_output.batch["prompts"].to(device)  # prompt ids
         completion_ids = final_gen_batch_output.batch["responses"].to(device)  # completion ids
@@ -432,6 +452,10 @@ class WeaverGRPOTrainer(GRPOTrainer):
                         )
             else: 
                 ref_per_token_logps, ref_supervise_mask = None, None
+        
+        # Clear memory after all inference computations (generation + old/ref logps)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         
         # Decode prompts and generated completions
         prompt_texts = self.processing_class.batch_decode(prompts, skip_special_tokens=True)
@@ -515,6 +539,8 @@ class WeaverGRPOTrainer(GRPOTrainer):
             all_token_counts = gather_object(completion_lengths.tolist())
             # Gather ground truths from inputs (dataset label)
             all_ground_truths = gather_object([ex.get("solution", "") for ex in inputs])
+            # Gather image paths from inputs
+            all_image_paths = gather_object([ex.get("image_path", "") for ex in inputs])
             # Build stop reasons using EOS detection (True => eos, False => max_tokens)
             try:
                 eos_flags = agg_terminated_with_eos.detach().cpu().tolist()
@@ -559,6 +585,7 @@ class WeaverGRPOTrainer(GRPOTrainer):
                     verifies=all_verifies,
                     stop_reasons=all_stop_reasons,
                     reward_func_names=self.reward_func_names,
+                    image_paths=all_image_paths,
                 )
         except Exception as e:
             logging.warning(f"Failed to persist GRPO logs: {e}")

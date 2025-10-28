@@ -36,7 +36,7 @@ def log_function_call(func):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         func_name = func.__name__
-        logging.info(f"\033[94m[CALL] {func_name}\033[0m") # blue color
+        # logging.info(f"\033[94m[CALL] {func_name}\033[0m") # blue color
         return func(*args, **kwargs)
     return wrapper
 
@@ -657,7 +657,7 @@ class LatentMemoryModel(BaseModel):
         if self.training and hasattr(self, 'weaver') and self.weaver is not None and self.weaver.training:
             # Training weaver (GRPO): supervise ALL turns for consistency
             select_turns = [1] * len(triplets)
-            logging.info(f"[SUPERVISE DEBUG] Weaver training mode: supervising ALL {len(triplets)} turns")
+            # logging.info(f"[SUPERVISE DEBUG] Weaver training mode: supervising ALL {len(triplets)} turns")
         elif len(triplets) <= self.max_prompt_aug_num:
             select_turns = [1] * len(triplets)
         else:
@@ -665,7 +665,7 @@ class LatentMemoryModel(BaseModel):
             selected_indices = set(random.sample(range(triplets_num), self.max_prompt_aug_num))
             select_turns = [1 if i in selected_indices else 0 for i in range(triplets_num)]
         
-        logging.info(f"[SUPERVISE DEBUG] len(triplets): {len(triplets)}, max_prompt_aug_num: {self.max_prompt_aug_num}, select_turns: {select_turns}, training: {self.training}")
+        # logging.info(f"[SUPERVISE DEBUG] len(triplets): {len(triplets)}, max_prompt_aug_num: {self.max_prompt_aug_num}, select_turns: {select_turns}, training: {self.training}")
 
         # Initialize tensors to store logits and labels for the entire sequence
         all_logits = torch.zeros(1, seq_len, vocab_size, device=device)
@@ -698,7 +698,7 @@ class LatentMemoryModel(BaseModel):
         # Return logits and labels:
         # - supervised positions retain computed logits and original labels
         # - unsupervised positions have logits = 0 and labels = -100
-        logging.info(f"[SUPERVISE DEBUG] all_labels non-(-100) count: {(all_labels != -100).sum().item()}, total: {all_labels.numel()}")
+        # logging.info(f"[SUPERVISE DEBUG] all_labels non-(-100) count: {(all_labels != -100).sum().item()}, total: {all_labels.numel()}")
         return all_logits, all_labels
 
     @log_function_call

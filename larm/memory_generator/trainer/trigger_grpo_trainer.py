@@ -15,6 +15,7 @@ from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.utils.data import Dataset
 import re
 import copy
+import gc
 from accelerate.utils import gather_object
 
 from larm.data.interactions.base_interaction import InteractionDataProto
@@ -78,6 +79,20 @@ class TriggerGRPOTrainer(GRPOTrainer):
             f.write("=" * 80 + "\n")
             f.write("GRPO Training Logs - TriggerGRPOTrainer\n")
             f.write("=" * 80 + "\n\n")
+    
+    def training_step(self, model, inputs, num_items_in_batch=None):
+        """
+        Perform a training step on a batch of inputs, with memory cleanup after each step.
+        """
+        # Call the parent class's training_step
+        loss = super().training_step(model, inputs, num_items_in_batch)
+        
+        # Clear memory after each training step
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+        
+        return loss
     
     def _set_signature_columns_if_needed(self):
         # NOTE - If `self.args.remove_unused_columns` is True, non-signature columns are removed.
@@ -256,16 +271,20 @@ class TriggerGRPOTrainer(GRPOTrainer):
                     prompt_ids = prompt_completion_ids[:, :prompt_length]
                     completion_ids = prompt_completion_ids[:, prompt_length:]
         
-            # Mask everything after the first EOS token
-            # is_eos = completion_ids == self.processing_class.eos_token_id
-            # eos_idx = torch.full((is_eos.size(0),), is_eos.size(1), dtype=torch.long, device=device)
-            # eos_idx[is_eos.any(dim=1)] = is_eos.int().argmax(dim=1)[is_eos.any(dim=1)]
-            # sequence_indices = torch.arange(is_eos.size(1), device=device).expand(is_eos.size(0), -1)
-            # completion_mask = (sequence_indices <= eos_idx.unsqueeze(1)).int()
-            # completion_ids = completion_ids * completion_mask
-            completion_ids = self.tensor_fn.erase_after_first_eos(completion_ids, self.processing_class.eos_token_id)
-            completion_mask = completion_ids != self.processing_class.eos_token_id
-            is_eos = completion_ids == self.processing_class.eos_token_id
+        # Clear memory after generation (inference only, no gradients needed)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        # Mask everything after the first EOS token
+        # is_eos = completion_ids == self.processing_class.eos_token_id
+        # eos_idx = torch.full((is_eos.size(0),), is_eos.size(1), dtype=torch.long, device=device)
+        # eos_idx[is_eos.any(dim=1)] = is_eos.int().argmax(dim=1)[is_eos.any(dim=1)]
+        # sequence_indices = torch.arange(is_eos.size(1), device=device).expand(is_eos.size(0), -1)
+        # completion_mask = (sequence_indices <= eos_idx.unsqueeze(1)).int()
+        # completion_ids = completion_ids * completion_mask
+        completion_ids = self.tensor_fn.erase_after_first_eos(completion_ids, self.processing_class.eos_token_id)
+        completion_mask = completion_ids != self.processing_class.eos_token_id
+        is_eos = completion_ids == self.processing_class.eos_token_id
         # augmentation_mask: All sampled positions, not necessarily the ones enhanced by the weaver.
         augmentation_mask = completion_mask * (augmentation_ids != invalid_augmentation_id)
         
@@ -313,6 +332,10 @@ class TriggerGRPOTrainer(GRPOTrainer):
                         )
             else: 
                 ref_per_token_logps = None
+        
+        # Clear memory after all inference computations (generation + old/ref logps)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         
         # Decode the generated completions
         completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)

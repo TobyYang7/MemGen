@@ -160,7 +160,7 @@ def preprocess_batch(batch: Dict, image_root: str) -> Dict:
 
         return ""
 
-    format_template = r"""Solve the problem and output the answer in the format of <answer>Your answer here</answer>. \n """
+    format_template = r"""Solve the problem with proper reasoning and output the FINAL ANSWER in the format of <answer>Your answer here</answer>. \n """
     prompt_template = "Question: {prompt}\n"
 
     questions: List[str] = batch.get("question") or [""] * len(batch.get("solution", []))

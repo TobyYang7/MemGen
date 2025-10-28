@@ -340,6 +340,7 @@ def persist_grpo_logs(
     verifies: list[bool] | None,
     reward_func_names: list[str],
     stop_reasons: list[str] | None = None,
+    image_paths: list[str] | None = None,
 ) -> None:
     """
     Append per-sample human-readable and JSONL logs for GRPO.
@@ -360,6 +361,7 @@ def persist_grpo_logs(
         ground_truths = _flatten(ground_truths) if ground_truths is not None else None
         solutions_extracted = _flatten(solutions_extracted) if solutions_extracted is not None else None
         verifies = _flatten(verifies) if verifies is not None else None
+        image_paths = _flatten(image_paths) if image_paths is not None else None
 
         # Guard against length mismatches
         n = min(
@@ -372,6 +374,7 @@ def persist_grpo_logs(
             *( [len(solutions_extracted)] if solutions_extracted is not None else [] ),
             *( [len(verifies)] if verifies is not None else [] ),
             *( [len(stop_reasons)] if stop_reasons is not None else [] ),
+            *( [len(image_paths)] if image_paths is not None else [] ),
         )
         if n == 0:
             return
@@ -385,6 +388,8 @@ def persist_grpo_logs(
                 c_txt = completion_texts[idx]
                 r_total = rewards[idx]
                 f_txt.write(f"\n[Sample {idx}]\n")
+                if image_paths is not None:
+                    f_txt.write(f"Image path: {image_paths[idx]}\n")
                 f_txt.write(f"Prompt: {p_txt}\n")
                 comp_str = ", ".join([f"{name}: {float(rewards_by_func[name][idx]):.6f}" for name in reward_func_names])
                 f_txt.write(f"Reward: {float(r_total):.6f} | Components: {comp_str}\n")
@@ -425,6 +430,9 @@ def persist_grpo_logs(
                     record["solution"] = solutions_extracted[idx]
                 if verifies is not None:
                     record["verify"] = bool(verifies[idx])
+                # Add image_path before completion
+                if image_paths is not None:
+                    record["image_path"] = image_paths[idx]
                 # Ensure completion is always the last field
                 record["completion"] = completion_texts[idx]
                 f_jsonl.write(json.dumps(record, ensure_ascii=False) + "\n")
