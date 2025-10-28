@@ -18,6 +18,14 @@ DATASET_NAME="mmvp"
 # - Required when evaluating the model
 LOAD_MODEL_PATH="/root/toby/MemGen/test_output/${DATASET_NAME}/weaver/model.safetensors"
 
+# Evaluation JSON path (optional):
+# - If specified, data will be loaded from this JSON file instead of the default data loader
+# - The JSON file should have the same format as the preprocessed data
+# - Example: "/root/toby/MemGen/data/mmvp/test.json"
+EVAL_JSON_PATH="/root/toby/MemGen/data/mmvp/test.json"
+
+BASE_MODEL=True
+
 # evaluate
 uv run python -m accelerate.commands.launch \
     --config_file=configs/zero2.yaml \
@@ -38,5 +46,6 @@ uv run python -m accelerate.commands.launch \
     run.generation.temperature 1.0 \
     run.generation.max_response_length 256 \
     run.output_dir /root/toby/MemGen/test_output/${DATASET_NAME}_eval \
-    datasets.${DATASET_NAME}.mode grpo
+    datasets.${DATASET_NAME}.mode grpo \
+    datasets.${DATASET_NAME}.grpo.eval_json_path ${EVAL_JSON_PATH}
 
