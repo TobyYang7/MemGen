@@ -330,7 +330,7 @@ def extract_answer(text: str) -> str:
     """
     Extract the FINAL CHOICE from a solution.
     Priority:
-      1) Last occurrence inside \boxed{...} (supports nested braces)
+      1) Last occurrence inside \boxed{...} (supports nested braces, only extracts if braces are balanced)
       2) <answer>...</answer> fallback
       3) Raw text (fallback)
     Cleans common LaTeX wrappers like \text{...}, \displaystyle, and surrounding $ ... $.
@@ -338,7 +338,7 @@ def extract_answer(text: str) -> str:
     try:
         s = text
 
-        # -------- 1) Gather all contents inside \boxed{...} with a small brace parser --------
+        # -------- 1) Gather all contents inside \boxed{...} with balanced brace checking --------
         boxed_contents = []
 
         # find all occurrences of "\boxed" followed by optional spaces then "{"
@@ -348,9 +348,12 @@ def extract_answer(text: str) -> str:
             if open_brace_pos == -1:
                 continue
 
-            # brace matching to find the corresponding closing brace
+            # Brace matching to find the corresponding closing brace
+            # Only extracts if braces are properly balanced (not incomplete like \boxed{\frac{16})
             depth = 0
             i = open_brace_pos
+            found_balanced = False
+            
             while i < len(s):
                 ch = s[i]
                 if ch == '{':
@@ -358,8 +361,9 @@ def extract_answer(text: str) -> str:
                 elif ch == '}':
                     depth -= 1
                     if depth == 0:
-                        # extract inside { ... }
+                        # Found matching closing brace - extract inside { ... }
                         boxed = s[open_brace_pos + 1:i]
+                        found_balanced = True
 
                         # light cleaning: strip spaces and surrounding $ ... $
                         boxed = boxed.strip()
@@ -385,8 +389,10 @@ def extract_answer(text: str) -> str:
                             boxed_contents.append(boxed)
                         break
                 i += 1
+            
+            # If we reached end of text without finding balanced braces, skip this \boxed
 
-        # If we found any \boxed content, return the last one (FINAL CHOICE)
+        # If we found any \boxed content with balanced braces, return the last one (FINAL CHOICE)
         if boxed_contents:
             return boxed_contents[-1]
 
@@ -520,6 +526,6 @@ def persist_grpo_logs(
                 # Add completion and prompt at the end
                 record["completion"] = completion_texts[idx]
                 record["prompt"] = prompt_texts[idx]
-                f_jsonl.write(json.dumps(record, ensure_ascii=False) + "\n")
+                f_jsonl.write(json.dumps(record, ensure_ascii=False, indent=2) + "\n")
     except Exception as e:
         logging.warning(f"Failed to persist GRPO logs: {e}")

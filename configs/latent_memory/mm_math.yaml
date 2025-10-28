@@ -159,7 +159,7 @@ run:
     max_turns: 1
     max_start_length: 512     # Maximum length of the initial prompt.
     max_prompt_length: 4096    # Maximum prompt length during multi-turn interactions (includes all conversation history across turns).
-    max_response_length: 512
+    max_response_length: 1024
     max_obs_length: 512
     do_sample: False
     temperature: 1.0

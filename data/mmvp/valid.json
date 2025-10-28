@@ -1,20 +1,20 @@
 [
   {
     "prompt": "Solve the problem with proper reasoning, and make sure to put the FINAL CHOICE inside \\boxed{}. \\n Question: Is the sports car in the picture facing left or right?\nOptions: (a) Left (b) Right\n",
-    "completion": "(b)",
-    "solution": "(b)",
+    "completion": "(b) Right",
+    "solution": "(b) Right",
     "image_path": "dataset/mmvp/MMVP Images/294.jpg"
   },
   {
     "prompt": "Solve the problem with proper reasoning, and make sure to put the FINAL CHOICE inside \\boxed{}. \\n Question: How many spots are on the animal in the image?\nOptions: (a) 5 (b) 6\n",
-    "completion": "(a)",
-    "solution": "(a)",
+    "completion": "(a) 5",
+    "solution": "(a) 5",
     "image_path": "dataset/mmvp/MMVP Images/47.jpg"
   },
   {
     "prompt": "Solve the problem with proper reasoning, and make sure to put the FINAL CHOICE inside \\boxed{}. \\n Question: Can you see the dorsal fin of the animal?\nOptions: (a) Yes (b) No\n",
-    "completion": "(b)",
-    "solution": "(b)",
+    "completion": "(b) No",
+    "solution": "(b) No",
     "image_path": "dataset/mmvp/MMVP Images/20.jpg"
   }
 ]

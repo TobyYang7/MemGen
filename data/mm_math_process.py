@@ -138,26 +138,49 @@ def preprocess_batch(batch: Dict, image_root: str) -> Dict:
         return "\\boxed{" + answer + "}"
 
     def _extract_answer_from_solution(solution_text: str) -> str:
-        """Extract the LAST \\boxed{...} occurrence from solution text."""
+        """Extract the LAST \\boxed{...} occurrence from solution text.
+        Only extracts answers with properly closed braces (handles nested braces).
+        """
         if not solution_text:
             return ""
 
-        # Try both single and double backslash patterns
-        matches = list(re.finditer(r"\\\\boxed\{([^}]+)\}", solution_text, flags=re.DOTALL))
+        def _extract_balanced_braces(text: str, start_pos: int) -> Optional[str]:
+            """Extract content with balanced braces starting from start_pos.
+            Returns None if braces are not balanced.
+            """
+            if start_pos >= len(text) or text[start_pos] != '{':
+                return None
+            
+            brace_count = 0
+            i = start_pos
+            while i < len(text):
+                if text[i] == '{':
+                    brace_count += 1
+                elif text[i] == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        # Found matching closing brace
+                        return text[start_pos + 1:i]
+                i += 1
+            
+            # Braces not balanced
+            return None
+
+        # Find all \boxed or \\boxed occurrences
+        pattern = r"\\\\?boxed\{"
+        matches = list(re.finditer(pattern, solution_text))
+        
         if not matches:
-            matches = list(re.finditer(r"\\boxed\{([^}]+)\}", solution_text, flags=re.DOTALL))
-
-        if matches:
-            return matches[-1].group(1).strip()
-
-        # Handle incomplete patterns
-        incomplete_pattern = r"\\\\?boxed\{([^}]*?)(?:\}|$|\n)"
-        incomplete_matches = list(re.finditer(incomplete_pattern, solution_text, flags=re.DOTALL))
-        if incomplete_matches:
-            content = incomplete_matches[-1].group(1).strip()
-            if content:
-                return content
-
+            return ""
+        
+        # Try to extract from last match first, then work backwards
+        for match in reversed(matches):
+            start_pos = match.end() - 1  # Position of '{'
+            content = _extract_balanced_braces(solution_text, start_pos)
+            if content is not None:
+                return content.strip()
+        
+        # No valid boxed answer with balanced braces found
         return ""
 
     format_template = r"""Solve the math problem with proper reasoning, and make sure to put the FINAL CHOICE inside \boxed{}. \n """

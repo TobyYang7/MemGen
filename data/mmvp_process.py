@@ -14,6 +14,7 @@ Usage:
 """
 
 import os
+import re
 import json
 import logging
 import argparse
@@ -203,10 +204,51 @@ def preprocess_batch(batch: Dict, image_root: str) -> Dict:
     Returns:
         Preprocessed batch with fields:
         - prompt: formatted question prompt with options
-        - completion: correct answer
-        - solution: correct answer (same as completion for compatibility)
+        - completion: full answer with option content (e.g., "(a) Open")
+        - solution: full answer with option content (same as completion for compatibility)
         - image_path: path to image file
     """
+    def parse_option_from_text(options_text: str, answer_label: str) -> str:
+        """Parse the full option content from options text.
+        
+        Args:
+            options_text: Full options string like "(a) Open (b) Closed"
+            answer_label: Answer label like "a" or "(a)"
+            
+        Returns:
+            Full option text like "(a) Open", or just the label if parsing fails
+        """
+        if not options_text or not answer_label:
+            return answer_label
+        
+        # Normalize answer label (remove parentheses if present)
+        answer_label_clean = answer_label.strip().lower()
+        if answer_label_clean.startswith('(') and answer_label_clean.endswith(')'):
+            answer_label_clean = answer_label_clean[1:-1].strip()
+        
+        # Pattern to match options like "(a) Content" or "a) Content" or "a. Content"
+        # This will capture: (a) Open, (b) Closed, etc.
+        pattern = r'\(([a-z])\)\s*([^(]+?)(?=\s*\([a-z]\)|$)'
+        matches = re.findall(pattern, options_text, re.IGNORECASE)
+        
+        for label, content in matches:
+            if label.lower() == answer_label_clean:
+                # Return the full option with label
+                return f"({label}) {content.strip()}"
+        
+        # Fallback: try simpler pattern without parentheses
+        pattern_simple = r'([a-z])[\)\.]\s*([^a-z\)\.]+?)(?=[a-z][\)\.]|$)'
+        matches_simple = re.findall(pattern_simple, options_text, re.IGNORECASE)
+        
+        for label, content in matches_simple:
+            if label.lower() == answer_label_clean:
+                return f"({label}) {content.strip()}"
+        
+        # If parsing fails, return original answer with parentheses if not present
+        if not answer_label.strip().startswith('('):
+            return f"({answer_label_clean})"
+        return answer_label
+    
     indices: List = batch.get("index", [])
     questions: List[str] = batch.get("question", [])
     options_list: List = batch.get("options", [])
@@ -231,12 +273,13 @@ def preprocess_batch(batch: Dict, image_root: str) -> Dict:
             options=options_text
         )
         
-        # Correct answer as completion and solution
-        answer_text = str(correct_answer).strip() if correct_answer else ""
+        # Parse full answer with option content
+        answer_label = str(correct_answer).strip() if correct_answer else ""
+        full_answer = parse_option_from_text(options_text, answer_label)
         
         prompts.append(processed_prompt)
-        completions.append(answer_text)
-        solutions.append(answer_text)
+        completions.append(full_answer)
+        solutions.append(full_answer)
         
         # Image path: index corresponds to image filename
         # Assuming images are named like "1.jpg", "2.jpg", etc.

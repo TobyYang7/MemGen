@@ -235,6 +235,7 @@ class WeaverGRPOTrainer(GRPOTrainer):
         if not issubclass(self.env_class, StaticEnv):
             raise ValueError("Single-turn mode only: DynamicEnv is not supported.")
 
+        from larm.memory_generator.utils import THINK_SYS_PROMPT
         prompts_text = []
         messages_list = []
         images_list = []
@@ -260,19 +261,31 @@ class WeaverGRPOTrainer(GRPOTrainer):
 
             if img is not None:
                 any_image = True
-                messages_list.append({
-                    "role": "user",
-                    "content": [
-                        {"type": "image", "image": img},
-                        {"type": "text", "text": prompt_text},
-                    ],
-                })
+                messages_list.append([
+                    {
+                        "role": "system",
+                        "content": THINK_SYS_PROMPT
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image", "image": img},
+                            {"type": "text", "text": prompt_text},
+                        ],
+                    }
+                ])
                 images_list.append(img)
             else:
-                messages_list.append({
-                    "role": "user",
-                    "content": prompt_text,
-                })
+                messages_list.append([
+                    {
+                        "role": "system",
+                        "content": THINK_SYS_PROMPT
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt_text,
+                    }
+                ])
                 images_list.append(None)
 
         # Prefer model.processor when available for VLMs
@@ -287,8 +300,8 @@ class WeaverGRPOTrainer(GRPOTrainer):
 
         # Build encodings
         if hasattr(proc, "apply_chat_template"):
-            # Ensure each call receives a list of messages
-            texts = [proc.apply_chat_template([m], tokenize=False, add_generation_prompt=True) for m in messages_list]
+            # Each element in messages_list is already a list of messages (system + user)
+            texts = [proc.apply_chat_template(m, tokenize=False, add_generation_prompt=True) for m in messages_list]
         else:
             # Fallback: use the plain prompt texts
             texts = prompts_text

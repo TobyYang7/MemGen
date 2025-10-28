@@ -167,13 +167,13 @@ def postprocess_assistant_labels(
             The modified labels tensor with positions corresponding to 
             `<|im_start|>assistant\n` masked as -100.
     """
-    if tokenizer.chat_template != CONVERSATION_TEMPLATE:
-        raise ValueError(
-            "Invalid tokenizer.chat_template detected.\n"
-            f"Expected:\n{CONVERSATION_TEMPLATE}\n\n"
-            f"Got:\n{tokenizer.chat_template}\n\n"
-            "Please ensure that you are using the correct conversation template."
-        )
+    # if tokenizer.chat_template != CONVERSATION_TEMPLATE:
+    #     raise ValueError(
+    #         "Invalid tokenizer.chat_template detected.\n"
+    #         f"Expected:\n{CONVERSATION_TEMPLATE}\n\n"
+    #         f"Got:\n{tokenizer.chat_template}\n\n"
+    #         "Please ensure that you are using the correct conversation template."
+    #     )
     
     # Encode the token sequence for "<|im_start|>assistant\n"
     pattern_ids: List[int] = tokenizer.encode("<|im_start|>assistant\n", add_special_tokens=False)

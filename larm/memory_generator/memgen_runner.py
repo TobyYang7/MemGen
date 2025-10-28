@@ -198,7 +198,12 @@ class LatentMemoryRunner(BaseRunner):
             if image is not None:
                 # Use Qwen2.5-VL's recommended message format
                 # Build messages with image and text following official API
+                from larm.memory_generator.utils import THINK_SYS_PROMPT
                 messages = [
+                    {
+                        "role": "system",
+                        "content": THINK_SYS_PROMPT
+                    },
                     {
                         "role": "user",
                         "content": [
@@ -691,6 +696,7 @@ class LatentMemoryRunner(BaseRunner):
                 images_list = []
                 any_image = False
                 
+                from larm.memory_generator.utils import THINK_SYS_PROMPT
                 for i, example in enumerate(test_batch):
                     prompt_text = example["prompt"]
                     
@@ -705,19 +711,31 @@ class LatentMemoryRunner(BaseRunner):
                     
                     if img is not None:
                         any_image = True
-                        messages_list.append({
-                            "role": "user",
-                            "content": [
-                                {"type": "image", "image": img},
-                                {"type": "text", "text": prompt_text},
-                            ],
-                        })
+                        messages_list.append([
+                            {
+                                "role": "system",
+                                "content": THINK_SYS_PROMPT
+                            },
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "image", "image": img},
+                                    {"type": "text", "text": prompt_text},
+                                ],
+                            }
+                        ])
                         images_list.append(img)
                     else:
-                        messages_list.append({
-                            "role": "user",
-                            "content": prompt_text,
-                        })
+                        messages_list.append([
+                            {
+                                "role": "system",
+                                "content": THINK_SYS_PROMPT
+                            },
+                            {
+                                "role": "user",
+                                "content": prompt_text,
+                            }
+                        ])
                         images_list.append(None)
                 
                 # Prefer model.processor when available for VLMs
@@ -732,8 +750,8 @@ class LatentMemoryRunner(BaseRunner):
                 
                 # Build encodings
                 if hasattr(proc, "apply_chat_template"):
-                    # Ensure each call receives a list of messages
-                    texts = [proc.apply_chat_template([m], tokenize=False, add_generation_prompt=True) for m in messages_list]
+                    # Each element in messages_list is already a list of messages (system + user)
+                    texts = [proc.apply_chat_template(m, tokenize=False, add_generation_prompt=True) for m in messages_list]
                 else:
                     # Fallback: use the plain prompt texts
                     texts = prompts
