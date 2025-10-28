@@ -7,10 +7,10 @@ fields: prompt, completion, solution, image_path
 
 Usage:
     # Using config file
-    uv run scripts/mm_math_process.py --config configs/latent_memory/mm_math.yaml
+    uv run data/mm_math_process.py --config configs/latent_memory/mm_math.yaml
     
     # Manual parameters
-    uv run scripts/mm_math_process.py --output_dir data/mm_math --val_ratio 0.05 --test_ratio 0.05
+    uv run data/mm_math_process.py --output_dir data/mm_math --val_ratio 0.5 --test_ratio 0.1
 """
 
 import os
@@ -160,7 +160,7 @@ def preprocess_batch(batch: Dict, image_root: str) -> Dict:
 
         return ""
 
-    format_template = r"""Solve the problem with proper reasoning and output the FINAL ANSWER in the format of <answer>Your answer here</answer>. \n """
+    format_template = r"""Solve the math problem with proper reasoning, and make sure to put the FINAL CHOICE inside \boxed{}. \n """
     prompt_template = "Question: {prompt}\n"
 
     questions: List[str] = batch.get("question") or [""] * len(batch.get("solution", []))

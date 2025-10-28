@@ -668,22 +668,111 @@ class LatentMemoryRunner(BaseRunner):
         test_funcs = [self.env_cls.get_reward_func("accuracy")]
         save_file = os.path.join(output_dir, "answer.json")
         recorder = StaticEvalRecorder(compute_metrics=test_funcs, writer=writer, log_file=save_file)
+        
+        # Prepare augment configuration info for recording
+        augment_info = {
+            'max_prompt_aug_num': self.model.max_prompt_aug_num,
+            'max_inference_aug_num': self.model.max_inference_aug_num,
+            'prompt_latents_len': self.model.weaver.prompt_latents_num if self.model.weaver else 0,
+            'inference_latents_len': self.model.weaver.inference_latents_num if self.model.weaver else 0,
+        }
+        logging.info(f"[EVAL] Augment configuration: {augment_info}")
 
         # batch generation
         for test_batch in tqdm(test_dataloader):
             with unwrap_model_for_generation(
                 model_wrapped, accelerator
             ) as unwrapped_model:
-                # construct InteractionDataProto object
+                # construct InteractionDataProto object with image support
                 prompts = [x["prompt"] for x in test_batch]
-                prompt_inputs = self.processing_class(
-                    text=prompts, return_tensors="pt", padding=True, padding_side="left", add_special_tokens=True
-                )
+                
+                # Check if batch contains images and prepare messages
+                messages_list = []
+                images_list = []
+                any_image = False
+                
+                for i, example in enumerate(test_batch):
+                    prompt_text = example["prompt"]
+                    
+                    # Try to load image if present
+                    img = None
+                    try:
+                        image_path = example.get("image_path") if isinstance(example, dict) else None
+                        if image_path is not None:
+                            img = Image.open(image_path).convert("RGB")
+                    except Exception as e:
+                        logging.warning(f"Failed to load image for sample {i}: {e}")
+                    
+                    if img is not None:
+                        any_image = True
+                        messages_list.append({
+                            "role": "user",
+                            "content": [
+                                {"type": "image", "image": img},
+                                {"type": "text", "text": prompt_text},
+                            ],
+                        })
+                        images_list.append(img)
+                    else:
+                        messages_list.append({
+                            "role": "user",
+                            "content": prompt_text,
+                        })
+                        images_list.append(None)
+                
+                # Prefer model.processor when available for VLMs
+                processor = getattr(self.model, "processor", None)
+                proc = processor if processor is not None else self.processing_class
+                
+                # Check for mixed modality batches
+                if any_image and any(x is None for x in images_list):
+                    logging.error("\033[91m[ERROR] Mixed image and text-only samples detected in the same batch. "
+                                  "Please group samples by modality (all-with-image or all-text).\033[0m")
+                    raise ValueError("Mixed image and text-only samples in one batch are not supported. Group by modality.")
+                
+                # Build encodings
+                if hasattr(proc, "apply_chat_template"):
+                    # Ensure each call receives a list of messages
+                    texts = [proc.apply_chat_template([m], tokenize=False, add_generation_prompt=True) for m in messages_list]
+                else:
+                    # Fallback: use the plain prompt texts
+                    texts = prompts
+                
+                if any_image:
+                    prompt_inputs = proc(
+                        text=texts,
+                        images=images_list,
+                        return_tensors="pt",
+                        padding=True,
+                    )
+                else:
+                    prompt_inputs = proc(
+                        text=texts,
+                        return_tensors="pt",
+                        padding=True,
+                        padding_side="left",
+                        add_special_tokens=True
+                    )
+                
                 prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
                 gen_batch = InteractionDataProto()
                 gen_batch.batch["input_ids"] = prompt_ids.to(accelerator.device)
                 gen_batch.batch["attention_mask"] = prompt_mask.to(accelerator.device)
-                gen_batch.no_tensor_batch["initial_prompts"] = [x["prompt"] for x in test_batch]
+                gen_batch.no_tensor_batch["initial_prompts"] = prompts
+                
+                # Attach vision tensors if present
+                if "pixel_values" in prompt_inputs:
+                    try:
+                        vision_pixel_values = prompt_inputs["pixel_values"].to(accelerator.device).to(torch.bfloat16)
+                    except Exception:
+                        vision_pixel_values = prompt_inputs["pixel_values"].to(accelerator.device)
+                    gen_batch.batch["pixel_values"] = vision_pixel_values
+                    logging.info(f"[EVAL] Vision inputs added - pixel_values shape: {vision_pixel_values.shape}")
+                
+                if "image_grid_thw" in prompt_inputs:
+                    vision_image_grid_thw = prompt_inputs["image_grid_thw"].to(accelerator.device)
+                    gen_batch.batch["image_grid_thw"] = vision_image_grid_thw
+                    logging.info(f"[EVAL] Vision inputs added - image_grid_thw shape: {vision_image_grid_thw.shape}")
 
                 # generation manager
                 self.generation_manager.actor_rollout_wg = unwrapped_model
@@ -694,7 +783,7 @@ class LatentMemoryRunner(BaseRunner):
                 completions = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
 
             # 转为 seperated examples
-            recorder.record_batch(completions, test_batch)
+            recorder.record_batch(completions, test_batch, augment_info=augment_info)
         recorder.finalize()
         writer.close()
 
