@@ -44,7 +44,7 @@ from larm.data.envs.base_env import StaticEnv, DynamicEnv
 from .utils import (
     nanstd, nanmax, nanmin,
     init_grpo_log_files, persist_grpo_logs,
-    log_prompt_truncation
+    log_prompt_truncation, extract_answer
 )
 from ..memgen_model import LatentMemoryModel
 from .verifier import verify_solution_equivalence
@@ -548,28 +548,17 @@ class WeaverGRPOTrainer(GRPOTrainer):
             except Exception:
                 all_stop_reasons = ["unknown"] * len(all_completion_texts)
 
-            # Helper to extract content inside <answer>...</answer>
-            def _extract_answer(text: str) -> str:
-                try:
-                    low = text.lower()
-                    s = low.find("<answer>")
-                    e = low.find("</answer>")
-                    if s != -1 and e != -1 and e > s:
-                        return text[s + len("<answer>") : e].strip()
-                except Exception:
-                    pass
-                return ""
-
             if self.accelerator.is_main_process:
                 # Compute extracted solutions and verify flags on main process
-                all_solutions_extracted = [_extract_answer(t) for t in all_completion_texts]
-                all_verifies = []
-                for sol, gt in zip(all_solutions_extracted, all_ground_truths):
-                    try:
-                        verdict = verify_solution_equivalence(sol, gt)
-                    except Exception:
-                        verdict = False
-                    all_verifies.append(verdict)
+                all_solutions_extracted = [extract_answer(t) for t in all_completion_texts]
+                # all_solutions_extracted = all_completion_texts
+                # all_verifies = []
+                # for sol, gt in zip(all_solutions_extracted, all_ground_truths):
+                #     try:
+                #         verdict = verify_solution_equivalence(sol, gt)
+                #     except Exception:
+                #         verdict = False
+                #     all_verifies.append(verdict)
                 persist_grpo_logs(
                     log_file=self.grpo_log_file,
                     jsonl_file=self.grpo_jsonl_file,
@@ -582,7 +571,7 @@ class WeaverGRPOTrainer(GRPOTrainer):
                     token_counts=all_token_counts,
                     ground_truths=all_ground_truths,
                     solutions_extracted=all_solutions_extracted,
-                    verifies=all_verifies,
+                    # verifies=all_verifies,
                     stop_reasons=all_stop_reasons,
                     reward_func_names=self.reward_func_names,
                     image_paths=all_image_paths,

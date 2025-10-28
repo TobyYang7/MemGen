@@ -1,3 +1,4 @@
+import re
 import torch
 import os
 import json
@@ -323,6 +324,89 @@ def log_rollout_input(
     logging.info(f"Tokens: {tokens_str}")
     logging.info(f"Decoded text: {_tok.decode(valid_tokens, skip_special_tokens=False)}")
     logging.info("=" * 80)
+    
+
+def extract_answer(text: str) -> str:
+    """
+    Extract the FINAL CHOICE from a solution.
+    Priority:
+      1) Last occurrence inside \boxed{...} (supports nested braces)
+      2) <answer>...</answer> fallback
+      3) Raw text (fallback)
+    Cleans common LaTeX wrappers like \text{...}, \displaystyle, and surrounding $ ... $.
+    """
+    try:
+        s = text
+
+        # -------- 1) Gather all contents inside \boxed{...} with a small brace parser --------
+        boxed_contents = []
+
+        # find all occurrences of "\boxed" followed by optional spaces then "{"
+        for m in re.finditer(r'\\boxed\s*\{', s):
+            # position of the opening brace "{"
+            open_brace_pos = s.find('{', m.end() - 1)
+            if open_brace_pos == -1:
+                continue
+
+            # brace matching to find the corresponding closing brace
+            depth = 0
+            i = open_brace_pos
+            while i < len(s):
+                ch = s[i]
+                if ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+                    if depth == 0:
+                        # extract inside { ... }
+                        boxed = s[open_brace_pos + 1:i]
+
+                        # light cleaning: strip spaces and surrounding $ ... $
+                        boxed = boxed.strip()
+                        boxed = boxed.strip('$')
+
+                        # remove \displaystyle and similar display-style macros at the front
+                        boxed = re.sub(r'\\displaystyle\s*', '', boxed)
+
+                        # unwrap \text{...} if the whole thing is a single \text{...}
+                        def unwrap_text_env(x: str) -> str:
+                            x_strip = x.strip()
+                            if x_strip.startswith(r'\text{') and x_strip.endswith('}'):
+                                # naive unwrap of a single-level \text{...}
+                                inner = x_strip[len(r'\text{'):-1].strip()
+                                return inner
+                            return x
+                        boxed = unwrap_text_env(boxed)
+
+                        # collapse whitespace
+                        boxed = re.sub(r'\s+', ' ', boxed).strip()
+
+                        if boxed:
+                            boxed_contents.append(boxed)
+                        break
+                i += 1
+
+        # If we found any \boxed content, return the last one (FINAL CHOICE)
+        if boxed_contents:
+            return boxed_contents[-1]
+
+        # -------- 2) Fallback: <answer>...</answer> --------
+        low = s.lower()
+        start = low.find("<answer>")
+        end = low.find("</answer>")
+        if start != -1 and end != -1 and end > start:
+            ans = s[start + len("<answer>"):end].strip()
+            ans = ans.strip('$')
+            ans = re.sub(r'\\displaystyle\s*', '', ans)
+            ans = re.sub(r'\s+', ' ', ans).strip()
+            return ans if ans else s
+
+    except Exception:
+        # fall through to raw text fallback
+        pass
+
+    # -------- 3) Fallback: return original text ----------
+    return text
 
 
 def persist_grpo_logs(
@@ -337,7 +421,7 @@ def persist_grpo_logs(
     token_counts: list[int],
     ground_truths: list[str] | None,
     solutions_extracted: list[str] | None,
-    verifies: list[bool] | None,
+    # verifies: list[bool] | None,
     reward_func_names: list[str],
     stop_reasons: list[str] | None = None,
     image_paths: list[str] | None = None,
@@ -360,7 +444,7 @@ def persist_grpo_logs(
         stop_reasons = _flatten(stop_reasons) if stop_reasons is not None else None
         ground_truths = _flatten(ground_truths) if ground_truths is not None else None
         solutions_extracted = _flatten(solutions_extracted) if solutions_extracted is not None else None
-        verifies = _flatten(verifies) if verifies is not None else None
+        # verifies = _flatten(verifies) if verifies is not None else None
         image_paths = _flatten(image_paths) if image_paths is not None else None
 
         # Guard against length mismatches
@@ -372,7 +456,7 @@ def persist_grpo_logs(
             *[len(rewards_by_func[name]) for name in reward_func_names],
             *( [len(ground_truths)] if ground_truths is not None else [] ),
             *( [len(solutions_extracted)] if solutions_extracted is not None else [] ),
-            *( [len(verifies)] if verifies is not None else [] ),
+            # *( [len(verifies)] if verifies is not None else [] ),
             *( [len(stop_reasons)] if stop_reasons is not None else [] ),
             *( [len(image_paths)] if image_paths is not None else [] ),
         )
@@ -397,8 +481,8 @@ def persist_grpo_logs(
                     f_txt.write(f"Ground truth: {ground_truths[idx]}\n")
                 if solutions_extracted is not None:
                     f_txt.write(f"Solution: {solutions_extracted[idx]}\n")
-                if verifies is not None:
-                    f_txt.write(f"Verify: {bool(verifies[idx])}\n")
+                # if verifies is not None:
+                #     f_txt.write(f"Verify: {bool(verifies[idx])}\n")
                 s_reason = (
                     stop_reasons[idx]
                     if stop_reasons is not None and idx < len(stop_reasons)
@@ -428,8 +512,8 @@ def persist_grpo_logs(
                     record["ground_truth"] = ground_truths[idx]
                 if solutions_extracted is not None:
                     record["solution"] = solutions_extracted[idx]
-                if verifies is not None:
-                    record["verify"] = bool(verifies[idx])
+                # if verifies is not None:
+                #     record["verify"] = bool(verifies[idx])
                 # Add image_path before completion
                 if image_paths is not None:
                     record["image_path"] = image_paths[idx]

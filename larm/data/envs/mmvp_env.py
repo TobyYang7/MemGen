@@ -6,8 +6,8 @@ from larm.memory_generator.trainer.verifier import verify_solution_equivalence
 from larm.memory_generator.trainer.utils import extract_answer
 
 
-@registry.register_env("mm_math")
-class MMMathEnv(StaticEnv):
+@registry.register_env("mmvp")
+class MMVPEnv(StaticEnv):
 
     def __init__(self, config):
         super().__init__(config)

@@ -42,18 +42,20 @@ model:
       
 # dataset configs
 datasets: 
-    mm_math:
+    mmvp:
       mode: sft  # options: ["sft", "grpo"], should manually keep align with the training method in `run` configs
       sft:
-        cache_path: dataset/mm_math_sft
-        val_ratio: 0.1
-        test_ratio: 0.1
-        image_root: dataset/mm_math/images/MM_Math
+        cache_path: dataset/mmvp_sft
+        train_ratio: 0.8
+        test_ratio: 0.
+        val_ratio: 0.0
+        image_root: dataset/mmvp/MMVP Images
       grpo: 
-        cache_path: dataset/mm_math_grpo
-        val_ratio: 0.1
-        test_ratio: 0.1
-        image_root: dataset/mm_math/images/MM_Math
+        cache_path: dataset/mmvp_grpo
+        train_ratio: 0.79
+        test_ratio: 0.19
+        val_ratio: 0.01
+        image_root: dataset/mmvp/MMVP Images
 
 # training/evaluation configs
 run: 
@@ -98,7 +100,7 @@ run:
     # grpo configs
     grpo:
       max_epochs: 1
-      batch_size: 1
+      batch_size: 4
       num_generations: 8
       num_iterations: 1
       grad_accum_steps: 1
@@ -164,3 +166,4 @@ run:
     do_sample: False
     temperature: 1.0
     eval_batch_size: 8
+

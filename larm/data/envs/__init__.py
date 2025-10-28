@@ -4,3 +4,4 @@ from larm.data.envs.gpqa_env import *
 from larm.data.envs.kodcode_env import *
 from larm.data.envs.triviaqa_env import *
 from larm.data.envs.mm_math_env import *
+from larm.data.envs.mmvp_env import *

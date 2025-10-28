@@ -1,0 +1,5 @@
+datasets:
+  mmvp:
+    cache_path: dataset/mmvp
+    image_root: dataset/mmvp/MMVP Images
+
