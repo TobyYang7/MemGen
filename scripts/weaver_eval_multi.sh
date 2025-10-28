@@ -24,13 +24,13 @@ uv run python -m accelerate.commands.launch \
     main.py \
     --cfg-path configs/latent_memory/${DATASET_NAME}.yaml \
     --options \
-    model.reasoner_model_name Qwen/Qwen2.5-VL-7B-Instruct \
+    model.reasoner_model_name UCSC-VLAA/VLAA-Thinker-Qwen2.5VL-7B \
     model.weaver.weaver_model_name Qwen/Qwen2.5-1.5B-Instruct \
     model.trigger.trigger_model_name null \
     model.weaver.prompt_latents_len 8 \
     model.weaver.inference_latents_len 8 \
-    model.max_prompt_aug_num 0 \
-    model.max_inference_aug_num 5 \
+    model.max_prompt_aug_num 1 \
+    model.max_inference_aug_num 3 \
     model.load_model_path ${LOAD_MODEL_PATH} \
     run.mode evaluate \
     run.generation.eval_batch_size 8 \

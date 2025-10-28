@@ -801,7 +801,7 @@ class LatentMemoryRunner(BaseRunner):
                 completions = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
 
             # 转为 seperated examples
-            recorder.record_batch(completions, test_batch, augment_info=augment_info)
+            recorder.record_batch(completions, test_batch)
         recorder.finalize()
         writer.close()
 

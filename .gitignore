@@ -18,3 +18,5 @@ dataset/
 
 .cache/
 .DS_Store
+
+tmp/
