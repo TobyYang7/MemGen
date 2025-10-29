@@ -11,7 +11,8 @@ export NCCL_ASYNC_DISABLE=1
 export TORCH_DISTRIBUTED_DEBUG=OFF
 export LOG_FILE_ONLY=1
 
-DATASET_NAME="mmvp"
+DATASET_NAME="math_vision"
+# DATASET_NAME="mmvp"
 # DATASET_NAME="mm_math"
 
 # train

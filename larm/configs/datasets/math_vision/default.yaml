@@ -1,0 +1,4 @@
+datasets:
+  math_vision:
+    cache_path: dataset/math_vision
+    image_root: dataset/math_vision/dataset/math_vision/images
