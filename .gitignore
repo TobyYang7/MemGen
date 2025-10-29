@@ -20,3 +20,5 @@ dataset/
 .DS_Store
 
 tmp/
+
+eval/*/*.log

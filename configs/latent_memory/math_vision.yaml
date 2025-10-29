@@ -43,7 +43,8 @@ model:
 # dataset configs
 datasets: 
     math_vision:
-      mode: sft  # options: ["sft", "grpo"], should manually keep align with the training method in `run` configs
+      mode: grpo  # options: ["sft", "grpo"], should manually keep align with the training method in `run` configs
+      max_sample: 1000  # Optional: randomly sample N examples from training data (default: use all data)
       sft:
         cache_path: .cache/math_vision
         dataset_root: dataset/math_vision
@@ -85,7 +86,7 @@ run:
       # logging
       logging_strategy: steps
       logging_steps: 1
-      eval_strategy: epoch
+      eval_strategy: "no"  # Set to "no" to disable evaluation during training
       eval_steps: 100
       save_strategy: epoch
       save_steps: 100
@@ -112,7 +113,7 @@ run:
       # duration
       logging_strategy: steps
       logging_steps: 1
-      eval_strategy: epoch
+      eval_strategy: "no"  # Set to "no" to disable evaluation during training
       eval_steps: 100
       save_strategy: epoch
       save_steps: 100
@@ -142,7 +143,7 @@ run:
       # duration
       logging_strategy: steps
       logging_steps: 1
-      eval_strategy: steps
+      eval_strategy: "no"  # Set to "no" to disable evaluation during training
       eval_steps: 100
       save_strategy: steps
       save_steps: 100

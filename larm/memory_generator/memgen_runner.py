@@ -986,6 +986,9 @@ class LatentMemoryRunner(BaseRunner):
         save_strategy = config_dict.get("save_strategy", "steps")
         save_steps = config_dict.get("save_steps", 200) if save_strategy == "steps" else None
 
+        # Disable load_best_model_at_end when eval_strategy is "no" to avoid evaluation at the end of training
+        load_best_model = False if eval_strategy == "no" else True
+
         # common args dict
         args_dict = {
             "output_dir": output_dir,
@@ -1005,7 +1008,7 @@ class LatentMemoryRunner(BaseRunner):
             "eval_steps": eval_steps,
             "report_to": ["tensorboard"] if use_tensorboard else [],   # <-- set to tensorboard
             "remove_unused_columns": False,
-            "load_best_model_at_end": True,
+            "load_best_model_at_end": load_best_model,
             "bf16": True,
         }
 

@@ -2,3 +2,4 @@ datasets:
   math_vision:
     cache_path: dataset/math_vision
     image_root: dataset/math_vision/dataset/math_vision/images
+    max_sample: 1000  # Optional: randomly sample N examples from training data (default: use all data)

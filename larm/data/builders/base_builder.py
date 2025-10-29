@@ -21,6 +21,7 @@ class BaseDatasetBuilder(ABC):
             config = cfg
         
         self.mode = config.get("mode", "sft")
+        self.full_config = config  # Store full config for access to top-level parameters
         self.config = config.get(self.mode)
 
     def build_datasets(self) -> DatasetDict:

@@ -61,20 +61,25 @@ class MathVisionBuilder(BaseDatasetBuilder):
 
         dataset_dict = load_dataset("json", data_files=data_files)
 
-        # Apply max_samples if specified
-        max_samples = getattr(self, 'full_config', {}).get("max_samples", None)
-        if max_samples is None:
-            max_samples = self.config.get("max_samples", None)
+        # Apply max_sample if specified (only for training data with random sampling)
+        # Try to get from full_config first (top-level), then from mode-specific config
+        max_sample = None
+        if hasattr(self, 'full_config') and self.full_config is not None:
+            max_sample = self.full_config.get("max_sample", None)
+        if max_sample is None:
+            max_sample = self.config.get("max_sample", None)
 
-        if max_samples is not None and max_samples > 0:
-            # logging.info(f"[Math_Vision] Applying max_samples={max_samples}")
-            for split_name in list(dataset_dict.keys()):
-                original_size = len(dataset_dict[split_name])
-                if original_size > max_samples:
-                    dataset_dict[split_name] = dataset_dict[split_name].select(range(max_samples))
-                    # logging.info(f"[Math_Vision] {split_name}: {original_size} -> {len(dataset_dict[split_name])} samples")
-                # else:
-                    # logging.info(f"[Math_Vision] {split_name}: keeping all {original_size} samples")
+        if max_sample is not None and max_sample > 0:
+            logging.info(f"[Math_Vision] Applying max_sample={max_sample} with random sampling")
+            # Only apply to training set
+            if "train" in dataset_dict:
+                original_size = len(dataset_dict["train"])
+                if original_size > max_sample:
+                    # Randomly shuffle and select max_sample samples
+                    dataset_dict["train"] = dataset_dict["train"].shuffle(seed=42).select(range(max_sample))
+                    logging.info(f"[Math_Vision] train: {original_size} -> {len(dataset_dict['train'])} samples (randomly sampled)")
+                else:
+                    logging.info(f"[Math_Vision] train: keeping all {original_size} samples (less than max_sample)")
 
         # Verify expected fields
         required_fields = ["prompt", "completion", "solution", "image_path"]

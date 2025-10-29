@@ -16,18 +16,22 @@ export LOG_FILE_ONLY=1
 # Base model evaluation (optional)
 # Set to "true" to evaluate only the base reasoner model without weaver/trigger
 # Set to "false" or leave empty to evaluate the full trained model
-BASE_MODEL="false"
+BASE_MODEL="true"
 
 # JSON file to evaluate (REQUIRED)
 # This should be a JSON file with format: [{"prompt": "...", "solution": "...", "image_path": "..."}]
-JSON_PATH="/root/toby/MemGen/data/mmvp/test.json"
+JSON_PATH=/root/toby/MemGen/data/math_vision/test.json
+
+# Output directory
+OUTPUT_DIR="/root/toby/MemGen/eval/math_vision"
 
 # Trained model path (REQUIRED)
 # Must point to a checkpoint file ending with .safetensors
 MODEL_PATH="/root/toby/MemGen/test_output/mmvp/weaver/model.safetensors"
 
 # Model names
-REASONER_MODEL="UCSC-VLAA/VLAA-Thinker-Qwen2.5VL-7B"
+# REASONER_MODEL="UCSC-VLAA/VLAA-Thinker-Qwen2.5VL-7B"
+REASONER_MODEL="Qwen/Qwen2.5-VL-7B-Instruct"
 WEAVER_MODEL="Qwen/Qwen2.5-1.5B-Instruct"
 TRIGGER_MODEL=""  # Leave empty for no trigger model
 
@@ -38,13 +42,10 @@ PROMPT_LATENTS_LEN=8
 INFERENCE_LATENTS_LEN=8
 
 # Generation configuration
-BATCH_SIZE=8
+BATCH_SIZE=24
 DO_SAMPLE=""  # Add "--do_sample" to enable sampling, leave empty for greedy
 TEMPERATURE=1.0
-MAX_RESPONSE_LENGTH=512
-
-# Output directory
-OUTPUT_DIR="/root/toby/MemGen/test_output/mmvp_eval_from_json"
+MAX_RESPONSE_LENGTH=1024
 
 # ===== Run Evaluation =====
 
