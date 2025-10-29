@@ -14,6 +14,7 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from peft import PeftConfig, LoraConfig
 
 import random
+import math
 from typing import Tuple, Optional, List, Union
 import logging
 import functools
@@ -28,6 +29,7 @@ from .utils import (
     load_state_dict_from_safetensor, 
     fix_model_parameters,
     log_trainable_params,
+    get_entropy,
 )
 
 # Decorator to log function calls in blue
@@ -264,6 +266,8 @@ class LatentMemoryModel(BaseModel):
         trigger_peft_config: Optional[PeftConfig] = None,
         max_prompt_aug_num: int = 1,     
         max_inference_aug_num: int = 5,
+        use_entropy_filter: bool = False,
+        entropy_threshold: float = 1.0,
     ):   
         super().__init__()
 
@@ -309,6 +313,10 @@ class LatentMemoryModel(BaseModel):
         # self.delimiters: List[str] = ["."]  # delimiters for detecting augmentation points
         self.max_prompt_aug_num = max_prompt_aug_num  # insert latents after input prompt
         self.max_inference_aug_num = max_inference_aug_num  # insert latents after specified delimiters
+        
+        # Entropy-based augmentation filtering
+        self.use_entropy_filter = use_entropy_filter  # whether to use entropy-based filtering
+        self.entropy_threshold = entropy_threshold  # threshold for high-entropy detection
 
         # Precompute delimiter token ID sequences for fast suffix checks (avoid repeated decode)
         try:
@@ -876,6 +884,10 @@ class LatentMemoryModel(BaseModel):
                     position_ids=current_position_ids,
                     output_hidden_states=False,
                 )
+                
+                # Save logits for entropy calculation before appending the next token
+                last_token_logits = outputs.logits[:, -1, :].clone()  # [batch_size, vocab_size]
+                
                 current_inputs_embeds, current_attention_mask, current_position_ids, current_input_ids = self._append_one_step(
                     outputs, current_inputs_embeds, current_attention_mask, current_position_ids, current_input_ids, do_sample, temperature
                 )
@@ -884,8 +896,11 @@ class LatentMemoryModel(BaseModel):
                     break 
 
                 # Determine which sentences in the batch should be augmented
+                # Pass last_token_logits for entropy-based filtering
                 augment_decision = self._should_augment(
-                    current_input_ids, current_attention_mask, sentence_augment_count=sentence_augment_count, 
+                    current_input_ids, current_attention_mask, 
+                    sentence_augment_count=sentence_augment_count,
+                    last_token_logits=last_token_logits,
                     do_sample=do_sample, temperature=temperature  
                 )
                 augmentation_pos[:, i + 1] = augment_decision
@@ -962,6 +977,10 @@ class LatentMemoryModel(BaseModel):
         reasoner_model_name = config.get("reasoner_model_name", None)
         max_prompt_aug_num = config.get("max_prompt_aug_num", None)
         max_inference_aug_num = config.get("max_inference_aug_num", None)
+        
+        # Entropy-based filtering configs
+        use_entropy_filter = config.get("use_entropy_filter", False)
+        entropy_threshold = config.get("entropy_threshold", 1.0)
 
         # processor configs
         weaver_configs = config.get("weaver")
@@ -995,7 +1014,10 @@ class LatentMemoryModel(BaseModel):
             trigger_peft_config=trigger_peft_config,
             # augmentations
             max_prompt_aug_num=max_prompt_aug_num,
-            max_inference_aug_num=max_inference_aug_num
+            max_inference_aug_num=max_inference_aug_num,
+            # entropy filtering
+            use_entropy_filter=use_entropy_filter,
+            entropy_threshold=entropy_threshold
         )
 
         # load model state dict
@@ -1052,13 +1074,14 @@ class LatentMemoryModel(BaseModel):
         max_num: int = 10,
     ) -> List[int]:
         """
-        Select positions in a sequence suitable for data augmentation based on labels and delimiters.
+        Select positions in a sequence suitable for data augmentation based on labels, delimiters, and entropy.
 
         This function identifies two types of augmentation points:
         1. **Prompt augmentation points**: positions where the label transitions from -100 to a valid token.
         - Typically corresponds to the start of the assistant's response.
         - There must be exactly one such point for single-turn forward processing.
         2. **Inference augmentation points**: positions inside valid label regions that follow a delimiter.
+        - If entropy filtering is enabled (self.use_entropy_filter=True), only positions with high entropy are selected.
         - Only the first `max_num` points are kept.
 
         Args:
@@ -1080,9 +1103,27 @@ class LatentMemoryModel(BaseModel):
         B, seq_len = input_ids.size(0), input_ids.size(1)
 
         prompt_augment_idx = []
-        inference_augment_idx = []
+        inference_augment_candidates = []  # Store (idx, entropy) tuples
 
-        for i in range(1, seq_len):  # Skip the first token and last token for augmentation
+        # Step 1: Compute entropy for all positions if entropy filtering is enabled
+        entropy_map = None
+        if self.use_entropy_filter:
+            try:
+                with torch.no_grad():
+                    outputs = self.model(
+                        input_ids=input_ids,
+                        attention_mask=torch.ones_like(input_ids),
+                        output_hidden_states=False,
+                    )
+                    logits = outputs.logits  # [B, seq_len, vocab_size]
+                    entropy_map = get_entropy(logits)  # [B, seq_len]
+                    logging.info(f"[Entropy Filter] Computed entropy for training, shape: {entropy_map.shape}")
+            except Exception as e:
+                logging.warning(f"[Entropy Filter] Failed to compute entropy: {e}. Falling back to delimiter-only mode.")
+                entropy_map = None
+
+        # Step 2: Identify augmentation candidates
+        for i in range(1, seq_len):  # Skip the first token for augmentation
             # Detect the boundary between prompt and label for prompt augmentation
             if (labels[:, i] != -100).all() and (labels[:, i - 1] == -100).all():
                 prompt_augment_idx.append(i)
@@ -1090,9 +1131,15 @@ class LatentMemoryModel(BaseModel):
             # Detect valid label regions for inference augmentation
             elif (labels[:, i] != -100).all() and (labels[:, i - 1] != -100).all():
                 batch_tokens_before_i = input_ids[:, :i]
-                # Assume check_ends_with_delimiter is defined
+                # Check if sequence ends with delimiter
                 if any(check_ends_with_delimiter(batch_tokens_before_i, tokenizer, delimiters)):
-                    inference_augment_idx.append(i)
+                    if entropy_map is not None:
+                        # Use entropy of the token BEFORE the augmentation point (i-1)
+                        avg_entropy = entropy_map[:, i-1].mean().item()
+                        inference_augment_candidates.append((i, avg_entropy))
+                    else:
+                        # No entropy filtering, use placeholder
+                        inference_augment_candidates.append((i, 0.0))
         
         # Ensure exactly one prompt augmentation point exists for single-turn processing
         if len(prompt_augment_idx) != 1:
@@ -1100,9 +1147,61 @@ class LatentMemoryModel(BaseModel):
 
         final_points = prompt_augment_idx[:1]
 
-        # Limit the number of inference augmentation points to max_num
-        if len(inference_augment_idx) > max_num:
-            inference_augment_idx = inference_augment_idx[:max_num]
+        # Step 3: Filter by entropy and select top candidates
+        if self.use_entropy_filter and entropy_map is not None:
+            # Filter: only keep high-entropy positions
+            high_entropy_candidates = [
+                (idx, ent) for idx, ent in inference_augment_candidates 
+                if ent > self.entropy_threshold
+            ]
+            
+            if len(high_entropy_candidates) > 0:
+                # Sort by entropy (descending) and select top max_num
+                high_entropy_candidates.sort(key=lambda x: x[1], reverse=True)
+                inference_augment_idx = [idx for idx, _ in high_entropy_candidates[:max_num]]
+                
+                logging.info(
+                    f"[Entropy Filter] Selected {len(inference_augment_idx)}/{len(inference_augment_candidates)} "
+                    f"augmentation points (threshold={self.entropy_threshold:.2f})"
+                )
+                
+                # Visualize selected positions with tokens
+                if len(high_entropy_candidates) > 0:
+                    top_entropies = [ent for _, ent in high_entropy_candidates[:max_num]]
+                    logging.info(f"[Entropy Filter] Top entropies: {top_entropies}")
+                    
+                    # Show tokens at selected positions (green) and rejected positions (default)
+                    selected_set = set(inference_augment_idx)
+                    color_green = "\033[92m"
+                    color_reset = "\033[0m"
+                    
+                    token_display = []
+                    candidate_num = 0  # Track candidate number
+                    
+                    for idx, ent in inference_augment_candidates[:min(10, len(inference_augment_candidates))]:
+                        # Decode token before this position
+                        token_id = input_ids[0, idx-1].item()
+                        token_text = tokenizer.decode([token_id], skip_special_tokens=False)
+                        
+                        # Escape special characters for better display
+                        token_text_display = repr(token_text)[1:-1]  # Remove outer quotes from repr()
+                        
+                        if idx in selected_set:
+                            candidate_num += 1
+                            token_display.append(f"{color_green}✓#{candidate_num} {token_text_display}(E:{ent:.2f}){color_reset}")
+                        else:
+                            token_display.append(f"✗{token_text_display}(E:{ent:.2f})")
+                    
+                    logging.info(f"[Entropy Filter] Tokens: {' | '.join(token_display)}")
+            else:
+                logging.warning(
+                    f"[Entropy Filter] No high-entropy positions found (threshold={self.entropy_threshold}). "
+                    f"Using delimiter-only mode."
+                )
+                inference_augment_idx = [idx for idx, _ in inference_augment_candidates[:max_num]]
+        else:
+            # No entropy filtering, use all delimiter-based candidates
+            inference_augment_idx = [idx for idx, _ in inference_augment_candidates[:max_num]]
 
         final_points.extend(inference_augment_idx)
         
@@ -1118,13 +1217,14 @@ class LatentMemoryModel(BaseModel):
         self, 
         input_ids, 
         attention_mask, 
-        sentence_augment_count: torch.Tensor, 
-        do_sample: bool, 
+        sentence_augment_count: torch.Tensor,
+        last_token_logits: Optional[torch.Tensor] = None,  # New: logits from the last generation step
+        do_sample: bool = True, 
         temperature: float = 0.0
     ) -> torch.Tensor:
         """
         Determine whether each sentence in the batch should be augmented based on
-        the model's strategy and trigger predictions.
+        delimiters, entropy, and trigger model predictions.
 
         aug_mask values:
             - -100: No sampling or augmentation decision not applicable
@@ -1135,6 +1235,7 @@ class LatentMemoryModel(BaseModel):
             input_ids (torch.Tensor): Input token IDs of shape (batch_size, seq_len)
             attention_mask (torch.Tensor): Attention mask for input_ids
             sentence_augment_count (torch.Tensor): Tracks how many times each sentence has been augmented
+            last_token_logits (Optional[torch.Tensor]): Logits from the last token for entropy calculation
             do_sample (bool): Whether to sample from the trigger output
             temperature (float): Sampling temperature
 
@@ -1151,9 +1252,58 @@ class LatentMemoryModel(BaseModel):
         # Initialize aug_mask with -100, meaning no augmentation by default
         aug_mask = torch.full((batch_size,), -100, dtype=torch.long, device=input_ids.device)
 
-        # Mark sentences ending with delimiters as candidates for augmentation (set to 0)
+        # Step 1: Delimiter filtering (grammatical reasonability)
         ends_with_delimiters = check_ends_with_delimiter(input_ids, tokenizer, delimiters).squeeze(1)
-        aug_mask[ends_with_delimiters] = 0
+        
+        # Step 2: Entropy filtering (model uncertainty) if enabled
+        if self.use_entropy_filter and last_token_logits is not None:
+            try:
+                # Compute entropy of the last generated token
+                current_entropy = get_entropy(last_token_logits)  # [batch_size]
+                high_entropy = current_entropy > self.entropy_threshold
+                
+                # Combine delimiter and entropy conditions
+                # Only mark as candidates if BOTH conditions are satisfied
+                candidates = ends_with_delimiters & high_entropy
+                
+                # Log entropy information with token visualization (only for candidates)
+                if ends_with_delimiters.any():
+                    delimiter_positions = ends_with_delimiters.nonzero(as_tuple=True)[0]
+                    candidate_count = 0  # Track how many candidates we've found
+                    
+                    for idx in delimiter_positions:
+                        ent = current_entropy[idx].item()
+                        is_candidate = candidates[idx].item()
+                        
+                        # Only log if this is a candidate (entropy > threshold)
+                        if is_candidate:
+                            candidate_count += 1
+                            
+                            # Decode the last token for visualization
+                            last_token_id = input_ids[idx, -1].item()
+                            token_text = tokenizer.decode([last_token_id], skip_special_tokens=False)
+                            
+                            # Escape special characters for better display
+                            token_text_display = repr(token_text)[1:-1]  # Remove outer quotes from repr()
+                            
+                            # Green color for selected candidates
+                            color_code = "\033[92m"  # Bright green
+                            reset_code = "\033[0m"
+                            token_display = f"{color_code}[✓ #{candidate_count} {token_text_display}]{reset_code}"
+                            status_text = f"{color_code}candidate=True (#{candidate_count}){reset_code}"
+                            
+                            logging.info(
+                                f"[Entropy Filter Inference] Position {idx}: entropy={ent:.3f}, "
+                                f"threshold={self.entropy_threshold:.3f}, {status_text} {token_display}"
+                            )
+            except Exception as e:
+                logging.warning(f"[Entropy Filter Inference] Failed to compute entropy: {e}. Using delimiter-only mode.")
+                candidates = ends_with_delimiters
+        else:
+            # No entropy filtering, use delimiter-only mode
+            candidates = ends_with_delimiters
+        
+        aug_mask[candidates] = 0
 
         # If a sentence has already reached the max augmentation count, reset to -100
         over_limit = (sentence_augment_count >= max_augment_num)
@@ -1166,10 +1316,10 @@ class LatentMemoryModel(BaseModel):
                 input_ids=input_ids[trigger_indices],
                 attention_mask=attention_mask[trigger_indices],
             )
-            last_token_logits = trigger_logits[:, -1]  # [num_trigger_samples, 2]
+            last_token_logits_trigger = trigger_logits[:, -1]  # [num_trigger_samples, 2]
 
             # Sample the next token to decide whether to augment
-            next_tokens = get_next_token(last_token_logits, do_sample, temperature).view(-1)
+            next_tokens = get_next_token(last_token_logits_trigger, do_sample, temperature).view(-1)
 
             # Update aug_mask: 0 = no augmentation, 1 = augment
             aug_mask[trigger_indices] = next_tokens

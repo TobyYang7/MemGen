@@ -1,4 +1,6 @@
+import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from safetensors import safe_open
 from transformers import GenerationConfig
 
@@ -22,6 +24,52 @@ You are a helpful assistant.<|im_end|>
 {% endif %}"""
 
 # ===== torch part =====
+
+def get_entropy(logits: torch.Tensor) -> torch.Tensor:
+    """
+    Calculate the entropy of token probability distributions.
+    
+    Entropy measures the uncertainty in the model's predictions:
+    - High entropy: model is uncertain (probability is spread across many tokens)
+    - Low entropy: model is confident (probability is concentrated on few tokens)
+    
+    Args:
+        logits (torch.Tensor): 
+            Logits tensor of shape (batch_size, seq_len, vocab_size) or (batch_size, vocab_size).
+            Raw model outputs before softmax.
+    
+    Returns:
+        torch.Tensor: 
+            Entropy values of shape (batch_size, seq_len) or (batch_size,).
+            Higher values indicate more uncertainty.
+    
+    Example:
+        >>> logits = torch.randn(2, 10, 50000)  # batch=2, seq=10, vocab=50000
+        >>> entropy = get_entropy(logits)  # shape: (2, 10)
+        >>> # High entropy (e.g., 5.0) means uncertain, low entropy (e.g., 0.1) means confident
+    """
+    with torch.no_grad():
+        # Compute probabilities using softmax
+        probs = F.softmax(logits, dim=-1)
+        
+        # Compute entropy: -sum(p * log(p))
+        # Handle numerical stability: log(0) = nan, so we mask these values
+        log_probs = torch.log(probs)
+        entropy_values = probs * log_probs
+        
+        # Replace NaN values (from log(0)) with zeros
+        entropy_values = torch.where(
+            ~torch.isnan(entropy_values),
+            entropy_values,
+            torch.zeros_like(entropy_values)
+        )
+        
+        # Sum over vocabulary dimension
+        entropy = -torch.sum(entropy_values, dim=-1)
+        
+    return entropy
+
+
 def load_state_dict_from_safetensor(model_path) -> Dict:
     """Load a safetensor file from the given path and return a state_dict.
 
