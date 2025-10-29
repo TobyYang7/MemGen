@@ -44,7 +44,7 @@ model:
 datasets: 
     math_vision:
       mode: grpo  # options: ["sft", "grpo"], should manually keep align with the training method in `run` configs
-      max_sample: 1000  # Optional: randomly sample N examples from training data (default: use all data)
+      # max_sample: 1000  # Optional: randomly sample N examples from training data (default: use all data)
       sft:
         cache_path: .cache/math_vision
         dataset_root: dataset/math_vision
@@ -59,7 +59,7 @@ run:
 
   seed: 42
   use_wandb: True
-  output_dir: test_model
+  # output_dir: test_model
   
   # route
   mode: train

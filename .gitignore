@@ -22,3 +22,5 @@ dataset/
 tmp/
 
 eval/*/*.log
+
+wandb/*

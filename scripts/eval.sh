@@ -25,6 +25,11 @@ JSON_PATH=/root/toby/MemGen/data/math_vision/test.json
 # Output directory
 OUTPUT_DIR=/root/toby/MemGen/eval/math_vision
 
+# Output filename (optional)
+# If not specified, will auto-generate based on model type
+# Examples: "answer.json", "my_results.json"
+OUTPUT_FILENAME=""
+
 # Trained model path (REQUIRED)
 # Must point to a checkpoint file ending with .safetensors
 MODEL_PATH=/root/toby/MemGen/test_output/math_vision/weaver/model.safetensors
@@ -37,12 +42,12 @@ TRIGGER_MODEL=""  # Leave empty for no trigger model
 
 # Augmentation configuration
 MAX_PROMPT_AUG_NUM=1
-MAX_INFERENCE_AUG_NUM=3
+MAX_INFERENCE_AUG_NUM=5
 PROMPT_LATENTS_LEN=8
 INFERENCE_LATENTS_LEN=8
 
 # Generation configuration
-BATCH_SIZE=24
+BATCH_SIZE=32
 DO_SAMPLE=""  # Add "--do_sample" to enable sampling, leave empty for greedy
 TEMPERATURE=1.0
 MAX_RESPONSE_LENGTH=1024
@@ -76,6 +81,7 @@ if [ "${BASE_MODEL}" = "true" ]; then
         --temperature ${TEMPERATURE} \
         --max_response_length ${MAX_RESPONSE_LENGTH} \
         --output_dir ${OUTPUT_DIR} \
+        ${OUTPUT_FILENAME:+--output_filename ${OUTPUT_FILENAME}} \
         --base_model
 else
     # Full model evaluation (with weaver/trigger)
@@ -95,8 +101,13 @@ else
         ${DO_SAMPLE} \
         --temperature ${TEMPERATURE} \
         --max_response_length ${MAX_RESPONSE_LENGTH} \
-        --output_dir ${OUTPUT_DIR}
+        --output_dir ${OUTPUT_DIR} \
+        ${OUTPUT_FILENAME:+--output_filename ${OUTPUT_FILENAME}}
 fi
 
-echo "Evaluation completed! Check results in ${OUTPUT_DIR}/answer.json"
+if [ -n "${OUTPUT_FILENAME}" ]; then
+    echo "Evaluation completed! Check results in ${OUTPUT_DIR}/${OUTPUT_FILENAME}"
+else
+    echo "Evaluation completed! Check results in ${OUTPUT_DIR}/ (filename auto-generated)"
+fi
 

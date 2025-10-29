@@ -94,6 +94,8 @@ def parse_args():
     # Output
     parser.add_argument("--output_dir", type=str, required=True,
                         help="Output directory for results")
+    parser.add_argument("--output_filename", type=str, default=None,
+                        help="Output JSON filename (default: auto-generated based on model type)")
     
     return parser.parse_args()
 
@@ -502,8 +504,14 @@ def evaluate(args):
         for i, (result, detail) in enumerate(zip(all_results, detailed_results)):
             result.update(detail)
         
-        # Generate output filename based on model type
-        if args.base_model:
+        # Generate output filename
+        if args.output_filename:
+            # Use user-specified filename
+            output_filename = args.output_filename
+            # Add .json extension if not present
+            if not output_filename.endswith('.json'):
+                output_filename += '.json'
+        elif args.base_model:
             # For base model, include model name in filename
             # Convert model path to safe filename: "Qwen/Qwen2.5-VL-7B" -> "Qwen_Qwen2.5_VL_7B"
             model_name = args.reasoner_model.replace("/", "_").replace("-", "_").replace(".", "_")

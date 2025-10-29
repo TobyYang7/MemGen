@@ -1006,7 +1006,7 @@ class LatentMemoryRunner(BaseRunner):
             "save_steps": save_steps,
             "eval_strategy": eval_strategy,
             "eval_steps": eval_steps,
-            "report_to": ["tensorboard"] if use_tensorboard else [],   # <-- set to tensorboard
+            "report_to": ["wandb"] if use_tensorboard else [],   # Report metrics to wandb when enabled
             "remove_unused_columns": False,
             "load_best_model_at_end": load_best_model,
             "bf16": True,
