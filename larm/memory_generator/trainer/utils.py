@@ -431,6 +431,7 @@ def persist_grpo_logs(
     reward_func_names: list[str],
     stop_reasons: list[str] | None = None,
     image_paths: list[str] | None = None,
+    augmentation_positions: list[str] | None = None,
 ) -> None:
     """
     Append per-sample human-readable and JSONL logs for GRPO.
@@ -523,9 +524,12 @@ def persist_grpo_logs(
                 # Add image_path before completion
                 if image_paths is not None:
                     record["image_path"] = image_paths[idx]
-                # Add completion and prompt at the end
+                # Add augmentation positions if available
+                if augmentation_positions is not None and idx < len(augmentation_positions):
+                    record["augmentation_positions"] = augmentation_positions[idx]
+                # Add completion at the end (no prompt)
                 record["completion"] = completion_texts[idx]
-                record["prompt"] = prompt_texts[idx]
+                # record["prompt"] = prompt_texts[idx]
                 f_jsonl.write(json.dumps(record, ensure_ascii=False, indent=2) + "\n")
     except Exception as e:
         logging.warning(f"Failed to persist GRPO logs: {e}")

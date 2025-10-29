@@ -385,7 +385,9 @@ class WeaverGRPOTrainer(GRPOTrainer):
                 else nullcontext()
             ):
                 # Use GenerationManager to coordinate the interaction between the agent and the environment
-                self.generation_manager.actor_rollout_wg = unwrapped_model  
+                self.generation_manager.actor_rollout_wg = unwrapped_model
+                # Enable augmentation mask return for training
+                self.generation_manager._return_augmentation_mask = True
                 final_gen_batch_output = self.generation_manager.run_agent_loop(gen_batch=gen_batch)
         
         # Clear memory after generation (inference only, no gradients needed)
@@ -397,6 +399,8 @@ class WeaverGRPOTrainer(GRPOTrainer):
         completion_ids = final_gen_batch_output.batch["responses"].to(device)  # completion ids
         prompt_completion_ids = final_gen_batch_output.batch["input_ids"].to(device)  # prompt and completion ids
         attention_mask = final_gen_batch_output.batch["attention_mask"].to(device)  # attention_mask on prompt and response
+        # Get augmentation positions if available
+        augmentation_pos = final_gen_batch_output.batch.get("augmentation_pos", None)
         prompt_mask = attention_mask[:, :prompts.size(1)]  
         completion_mask = final_gen_batch_output.batch["info_mask"][:, prompts.size(1):].to(device) 
         # Prefer chat EOS (<|im_end|>) if tokenizer supports it
@@ -562,6 +566,72 @@ class WeaverGRPOTrainer(GRPOTrainer):
                 all_stop_reasons = ["eos" if bool(f) else "max_tokens" for f in eos_flags]
             except Exception:
                 all_stop_reasons = ["unknown"] * len(all_completion_texts)
+            
+            # Extract augmentation positions and insert <AUG> markers in completions
+            all_augmentation_positions = None
+            all_completion_texts_with_markers = None
+            
+            if augmentation_pos is not None:
+                aug_pos_list = []
+                completions_with_markers = []
+                
+                for i in range(completion_ids.size(0)):
+                    response_len = completion_lengths[i].item()
+                    aug_mask = augmentation_pos[i]  # augmentation mask for this sample
+                    
+                    # Find positions where augmentation occurred (mask value > 0)
+                    aug_positions = []
+                    for pos in range(min(len(aug_mask), response_len)):
+                        if aug_mask[pos] > 0:
+                            aug_positions.append(pos)
+                    
+                    # Format as "pos/total_len" for each augmentation
+                    if len(aug_positions) > 0:
+                        aug_info = ", ".join([f"{pos}/{response_len}" for pos in aug_positions])
+                    else:
+                        aug_info = "no_augmentation"
+                    
+                    aug_pos_list.append(aug_info)
+                    
+                    # Insert <AUG> markers in completion text
+                    if len(aug_positions) > 0:
+                        # Decode completion tokens
+                        completion_tokens = completion_ids[i][:response_len].tolist()
+                        
+                        # Insert <AUG> marker after each augmentation position
+                        # Work backwards to preserve indices
+                        marked_tokens = []
+                        last_pos = 0
+                        aug_token_marker = " <AUG> "
+                        
+                        for pos in sorted(aug_positions):
+                            # Decode tokens up to this position
+                            if pos < len(completion_tokens):
+                                segment_tokens = completion_tokens[last_pos:pos+1]
+                                segment_text = self.processing_class.decode(segment_tokens, skip_special_tokens=True)
+                                marked_tokens.append(segment_text)
+                                marked_tokens.append(aug_token_marker)
+                                last_pos = pos + 1
+                        
+                        # Add remaining tokens
+                        if last_pos < len(completion_tokens):
+                            remaining_tokens = completion_tokens[last_pos:]
+                            remaining_text = self.processing_class.decode(remaining_tokens, skip_special_tokens=True)
+                            marked_tokens.append(remaining_text)
+                        
+                        completion_with_markers = "".join(marked_tokens)
+                    else:
+                        # No augmentation, use original text
+                        completion_with_markers = completions_text[i]
+                    
+                    completions_with_markers.append(completion_with_markers)
+                
+                # Gather augmentation positions and marked completions from all processes
+                all_augmentation_positions = gather_object(aug_pos_list)
+                all_completion_texts_with_markers = gather_object(completions_with_markers)
+            else:
+                # No augmentation info, use original completions
+                all_completion_texts_with_markers = all_completion_texts
 
             if self.accelerator.is_main_process:
                 # Compute extracted solutions and verify flags on main process
@@ -580,7 +650,7 @@ class WeaverGRPOTrainer(GRPOTrainer):
                     step=int(self.state.global_step),
                     mode=mode,
                     prompt_texts=all_prompt_texts,
-                    completion_texts=all_completion_texts,
+                    completion_texts=all_completion_texts_with_markers,  # Use marked completions
                     rewards=all_rewards,
                     rewards_by_func=all_rewards_by_func,
                     token_counts=all_token_counts,
@@ -590,6 +660,7 @@ class WeaverGRPOTrainer(GRPOTrainer):
                     stop_reasons=all_stop_reasons,
                     reward_func_names=self.reward_func_names,
                     image_paths=all_image_paths,
+                    augmentation_positions=all_augmentation_positions,
                 )
         except Exception as e:
             logging.warning(f"Failed to persist GRPO logs: {e}")

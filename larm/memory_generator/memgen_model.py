@@ -304,6 +304,7 @@ class LatentMemoryModel(BaseModel):
             self.weaver.config.hidden_size, self.model.config.hidden_size, dtype=torch.bfloat16
         ) # NOTE: 1536 -> 2048
         
+        # todo; delimiters
         self.delimiters: List[str] = [",", ".", "\n"]  # delimiters for detecting augmentation points
         # self.delimiters: List[str] = ["."]  # delimiters for detecting augmentation points
         self.max_prompt_aug_num = max_prompt_aug_num  # insert latents after input prompt

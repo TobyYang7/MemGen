@@ -215,7 +215,16 @@ class SingleTurnInteractionManager(InteractionManager):
         if "image_grid_thw" in gen_kwargs:
             logging.info(f"  image_grid_thw: {gen_kwargs['image_grid_thw'].shape}")
 
-        gen_output = self.actor_rollout_wg.generate(**gen_kwargs)
+        # Check if we should return augmentation mask (for training)
+        should_return_aug_mask = hasattr(self.actor_rollout_wg, 'weaver') and hasattr(self, '_return_augmentation_mask') and self._return_augmentation_mask
+        
+        if should_return_aug_mask:
+            gen_kwargs["return_augmentation_mask"] = True
+            gen_output, augmentation_pos = self.actor_rollout_wg.generate(**gen_kwargs)
+        else:
+            gen_output = self.actor_rollout_wg.generate(**gen_kwargs)
+            augmentation_pos = None
+        
         responses_ids = gen_output[:, rollings_active["input_ids"].size(1):]
         # Prefer chat_eos_token_id (<|im_end|>) if set, otherwise fallback to tokenizer.eos_token_id
         eos_id = getattr(self, "chat_eos_token_id", self.tokenizer.eos_token_id)
@@ -223,6 +232,10 @@ class SingleTurnInteractionManager(InteractionManager):
         
         # update right side
         original_right_side = self._update_right_side(original_right_side, responses_ids, next_obs_ids=None)
+        
+        # Store augmentation positions if available
+        if augmentation_pos is not None:
+            original_right_side['augmentation_pos'] = augmentation_pos
         
         # construct final output
         return self._compose_final_output(original_left_side, original_right_side)
