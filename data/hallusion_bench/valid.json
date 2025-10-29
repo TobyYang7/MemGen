@@ -1,0 +1,82 @@
+[
+  {
+    "category": "VD",
+    "subcategory": "math",
+    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Is the area of the ABCD equal to 12? Please answer yes or no.\n",
+    "completion": "The area of the rectangle is smaller than 12.",
+    "solution": "\\boxed{No}",
+    "image_path": "dataset/hallusion_bench/VD/math/8_1.png"
+  },
+  {
+    "category": "VD",
+    "subcategory": "video",
+    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: According to the positive sequence of the images, is the plug put into the power outlet?\n",
+    "completion": "the plug put into the power outlet",
+    "solution": "\\boxed{Yes}",
+    "image_path": "dataset/hallusion_bench/VD/video/7_0.png"
+  },
+  {
+    "category": "VS",
+    "subcategory": "chart",
+    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: From 2000-2050, is the population aged between 15 and 29 years in China the least in 2030?\n",
+    "completion": "the population aged between 15 and 29 years in China is the least in 2050",
+    "solution": "\\boxed{No}",
+    "image_path": "dataset/hallusion_bench/VS/chart/2_1.png"
+  },
+  {
+    "category": "VD",
+    "subcategory": "figure",
+    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Does this figure depict Colonel Sanders?\n",
+    "completion": "Yes, this figure depicts Colonel Sanders.",
+    "solution": "\\boxed{Yes}",
+    "image_path": "dataset/hallusion_bench/VD/figure/6_0.png"
+  },
+  {
+    "category": "VD",
+    "subcategory": "ocr",
+    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: According to the text given in the image, is this sign located in College Park, MD?\n",
+    "completion": "No, this sign locates in Las Vegas?",
+    "solution": "\\boxed{No}",
+    "image_path": "dataset/hallusion_bench/VD/ocr/11_0.png"
+  },
+  {
+    "category": "VS",
+    "subcategory": "map",
+    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: According to the map, can I take the Blue Line towards the Pentagon on the DC Metro system?\n",
+    "completion": "Yes. You can take the Blue Line towards the Pentagon on the DC Metro system",
+    "solution": "\\boxed{Yes}",
+    "image_path": "dataset/hallusion_bench/VS/map/6_1.png"
+  },
+  {
+    "category": "VS",
+    "subcategory": "table",
+    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Did January 2023 have a higher income percentage change than August 2023?\n",
+    "completion": "Yes",
+    "solution": "\\boxed{Yes}",
+    "image_path": null
+  },
+  {
+    "category": "VS",
+    "subcategory": "ocr",
+    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: According to the image, is the freedom from fear among the four freedoms proposed in this image?\n",
+    "completion": "Yes, the freedom from fear is among the four freedoms proposed in this image.",
+    "solution": "\\boxed{Yes}",
+    "image_path": "dataset/hallusion_bench/VS/ocr/7_1.png"
+  },
+  {
+    "category": "VD",
+    "subcategory": "illusion",
+    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Is the top line longer than the bottom line?\n",
+    "completion": "The top line is the same size as the bottom line.",
+    "solution": "\\boxed{No}",
+    "image_path": "dataset/hallusion_bench/VD/illusion/2_0.png"
+  },
+  {
+    "category": "VS",
+    "subcategory": "chart",
+    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: According to the chart, does China have the second largest population in the world?\n",
+    "completion": "China has the largest population in the world, followed by India and then the USA in 2021",
+    "solution": "\\boxed{Yes}",
+    "image_path": "dataset/hallusion_bench/VS/chart/3_1.png"
+  }
+]
