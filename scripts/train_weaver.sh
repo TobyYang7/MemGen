@@ -26,7 +26,7 @@ uv run python -m accelerate.commands.launch \
     model.trigger.trigger_model_name null \
     model.weaver.prompt_latents_len 8 \
     model.weaver.inference_latents_len 8 \
-    model.max_prompt_aug_num 0 \
+    model.max_prompt_aug_num 1 \
     model.max_inference_aug_num 3 \
     model.load_model_path null \
     run.mode train \
@@ -36,4 +36,4 @@ uv run python -m accelerate.commands.launch \
     run.generation.temperature 1.0 \
     run.output_dir /root/toby/MemGen/test_output/${DATASET_NAME} \
     datasets.${DATASET_NAME}.mode grpo \
-    datasets.${DATASET_NAME}.max_sample 1000
+    datasets.${DATASET_NAME}.max_sample 1000 

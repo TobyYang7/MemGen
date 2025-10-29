@@ -16,18 +16,18 @@ export LOG_FILE_ONLY=1
 # Base model evaluation (optional)
 # Set to "true" to evaluate only the base reasoner model without weaver/trigger
 # Set to "false" or leave empty to evaluate the full trained model
-BASE_MODEL="true"
+BASE_MODEL="false"
 
 # JSON file to evaluate (REQUIRED)
 # This should be a JSON file with format: [{"prompt": "...", "solution": "...", "image_path": "..."}]
 JSON_PATH=/root/toby/MemGen/data/math_vision/test.json
 
 # Output directory
-OUTPUT_DIR="/root/toby/MemGen/eval/math_vision"
+OUTPUT_DIR=/root/toby/MemGen/eval/math_vision
 
 # Trained model path (REQUIRED)
 # Must point to a checkpoint file ending with .safetensors
-MODEL_PATH="/root/toby/MemGen/test_output/mmvp/weaver/model.safetensors"
+MODEL_PATH=/root/toby/MemGen/test_output/math_vision/weaver/model.safetensors
 
 # Model names
 # REASONER_MODEL="UCSC-VLAA/VLAA-Thinker-Qwen2.5VL-7B"
