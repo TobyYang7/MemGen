@@ -49,14 +49,6 @@
   },
   {
     "category": "VS",
-    "subcategory": "table",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Did January 2023 have a higher income percentage change than August 2023?\n",
-    "completion": "Yes",
-    "solution": "\\boxed{Yes}",
-    "image_path": null
-  },
-  {
-    "category": "VS",
     "subcategory": "ocr",
     "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: According to the image, is the freedom from fear among the four freedoms proposed in this image?\n",
     "completion": "Yes, the freedom from fear is among the four freedoms proposed in this image.",

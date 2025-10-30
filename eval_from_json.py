@@ -77,6 +77,12 @@ def parse_args():
     parser.add_argument("--inference_latents_len", type=int, default=8,
                         help="Inference latents length")
     
+    # Entropy filtering configuration
+    parser.add_argument("--use_entropy_filter", action="store_true",
+                        help="Enable entropy-based augmentation filtering")
+    parser.add_argument("--entropy_threshold", type=float, default=1.0,
+                        help="Entropy threshold for augmentation filtering")
+    
     # Generation configuration
     parser.add_argument("--batch_size", type=int, default=8,
                         help="Batch size for evaluation")
@@ -159,7 +165,9 @@ def build_model(args):
             trigger_model_name=args.trigger_model,
             trigger_peft_config=trigger_peft_config,
             max_prompt_aug_num=args.max_prompt_aug_num,
-            max_inference_aug_num=args.max_inference_aug_num
+            max_inference_aug_num=args.max_inference_aug_num,
+            use_entropy_filter=args.use_entropy_filter,
+            entropy_threshold=args.entropy_threshold
         )
         
         # Load trained weights

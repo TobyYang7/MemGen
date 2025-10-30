@@ -277,6 +277,17 @@ def preprocess_dataset(dataset_dict: DatasetDict, batch_size: int = 512) -> Data
         if original_size != filtered_size:
             logging.warning(f"{split}: Filtered out {original_size - filtered_size} samples with empty solutions")
         
+        # Further filter out samples with missing or empty image_path
+        def has_valid_image_path(example):
+            image_path = example.get("image_path", None)
+            return image_path is not None and len(str(image_path).strip()) > 0
+        
+        image_before_size = len(ds)
+        ds = ds.filter(has_valid_image_path, num_proc=None, desc=f"Filter missing image_path ({split})")
+        image_after_size = len(ds)
+        if image_before_size != image_after_size:
+            logging.warning(f"{split}: Filtered out {image_before_size - image_after_size} samples with missing image_path")
+        
         logging.info(f"Preprocessing done for {split}: {len(ds)} samples")
         return ds
     

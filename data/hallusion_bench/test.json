@@ -152,22 +152,6 @@
     "image_path": "dataset/hallusion_bench/VS/chart/9_2.png"
   },
   {
-    "category": "VS",
-    "subcategory": "chart",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: In 2019, were the main policy interest rates of the Central Banks in the UK higher than those of the U.S. Central Bank , Eurozone, and Japan?\n",
-    "completion": "No, the main policy interest rates of the Central Banks in the UK were not higher than those of the U.S. Central Bank, Eurozone, and Japan in 2019.",
-    "solution": "\\boxed{No}",
-    "image_path": null
-  },
-  {
-    "category": "VS",
-    "subcategory": "table",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Is the number of gold medals of Germany 12 in winter Olympics in 2022?\n",
-    "completion": "The number of gold medals of Germany is 12.",
-    "solution": "\\boxed{Yes}",
-    "image_path": null
-  },
-  {
     "category": "VD",
     "subcategory": "figure",
     "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Are all the items in this figure ice cream bars?\n",
@@ -240,36 +224,12 @@
     "image_path": "dataset/hallusion_bench/VD/video/19_0.png"
   },
   {
-    "category": "VS",
-    "subcategory": "table",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Which state in the United States has the average maximum temperature in 2021 ?\n",
-    "completion": "Florida",
-    "solution": "\\boxed{Yes}",
-    "image_path": null
-  },
-  {
     "category": "VD",
     "subcategory": "figure",
     "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Is Bunny Bug in this figure?\n",
     "completion": "Yes, Bunny Bug is in this figure.",
     "solution": "\\boxed{Yes}",
     "image_path": "dataset/hallusion_bench/VD/figure/13_1.png"
-  },
-  {
-    "category": "VS",
-    "subcategory": "map",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Does the prime meridian intersect the Pacific Ocean, Southern Ocean, and Arctic Ocean?\n",
-    "completion": "prime meridian intersects the Atlantic Ocean, Southern Ocean, and Arctic Ocean",
-    "solution": "\\boxed{No}",
-    "image_path": null
-  },
-  {
-    "category": "VS",
-    "subcategory": "chart",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: In 2020, were white individuals the largest population group in the United States, with Latinos and African Americans as the second and third largest groups, respectively?\n",
-    "completion": "Yes. White individuals (non-Hispanic whites) were the largest demographic group in the United States in 2020. Latinos (or Hispanic Americans) were the second-largest group, while African Americans (or Black Americans) were the third-largest racial or ethnic group.",
-    "solution": "\\boxed{Yes}",
-    "image_path": null
   },
   {
     "category": "VS",
@@ -409,14 +369,6 @@
   },
   {
     "category": "VS",
-    "subcategory": "table",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Is the number of all medals of China 15 in winter Olympics in 2022?\n",
-    "completion": "The number of all medals of China is 15.",
-    "solution": "\\boxed{Yes}",
-    "image_path": null
-  },
-  {
-    "category": "VS",
     "subcategory": "chart",
     "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: According to the image, during the coronavirus pandemic from 2019 to 2022, were the most bankruptcy filings in the US recorded in the year 2020?\n",
     "completion": "No. During the coronavirus pandemic from 2019 to 2022, the most bankruptcy filings in the US were recorded in the year 2021.",
@@ -480,14 +432,6 @@
     "image_path": "dataset/hallusion_bench/VD/ocr/0_0.png"
   },
   {
-    "category": "VS",
-    "subcategory": "chart",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: From 2000 to 2019, Is 2019 exported the least value of bread, biscuits, wafers, cakes and pastries from the UK?\n",
-    "completion": "no",
-    "solution": "\\boxed{No}",
-    "image_path": null
-  },
-  {
     "category": "VD",
     "subcategory": "illusion",
     "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Is the top line shorter than the bottom line?\n",
@@ -536,14 +480,6 @@
     "image_path": "dataset/hallusion_bench/VS/map/7_1.png"
   },
   {
-    "category": "VS",
-    "subcategory": "map",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Among Arizona, Oklahoma, North Carolina, and Delaware on the map, is Delaware the farthest north?\n",
-    "completion": "yes",
-    "solution": "\\boxed{Yes}",
-    "image_path": null
-  },
-  {
     "category": "VD",
     "subcategory": "video",
     "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: According to the positive sequence of the images, Is the circle moving towards to left? Answer in one word.\n",
@@ -566,14 +502,6 @@
     "completion": "Beijing has the second most dense population in China in 2020",
     "solution": "\\boxed{Yes}",
     "image_path": "dataset/hallusion_bench/VS/table/6_1.png"
-  },
-  {
-    "category": "VS",
-    "subcategory": "map",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Among Arizona, Oklahoma, North Carolina, and Delaware on the map, is North Carolina the farthest north?\n",
-    "completion": "Delaware the farthest north",
-    "solution": "\\boxed{No}",
-    "image_path": null
   },
   {
     "category": "VD",
@@ -600,14 +528,6 @@
     "image_path": "dataset/hallusion_bench/VS/ocr/9_1.png"
   },
   {
-    "category": "VS",
-    "subcategory": "chart",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Does DJI hold more than 50% of the commercial drone brand market share in 2021?\n",
-    "completion": "Yes. DJI hold 54% of the commercial drone brand market share",
-    "solution": "\\boxed{Yes}",
-    "image_path": null
-  },
-  {
     "category": "VD",
     "subcategory": "video",
     "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: According to the positive sequence of the images, Is the circle keeping in the same place? Answer in one word.\n",
@@ -630,14 +550,6 @@
     "completion": "Homer Simpson disappear into the bushes",
     "solution": "\\boxed{Yes}",
     "image_path": "dataset/hallusion_bench/VD/video/1_0.png"
-  },
-  {
-    "category": "VS",
-    "subcategory": "ocr",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Is \"We shall fight on the beaches\" made in the U.K.?\n",
-    "completion": "Yes, \"We shall fight on the beaches\" is made in the U.K.",
-    "solution": "\\boxed{Yes}",
-    "image_path": null
   },
   {
     "category": "VD",
@@ -666,22 +578,6 @@
   {
     "category": "VS",
     "subcategory": "chart",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Is France, the leading importing country of gold, silverware, and jewelry with the highest import value in 2018?\n",
-    "completion": "Switzerland is the leading importing country of gold, silverware, and jewelry with the highest import value in 2018?",
-    "solution": "\\boxed{No}",
-    "image_path": null
-  },
-  {
-    "category": "VS",
-    "subcategory": "chart",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Between 2011 and 2020, was 2020 the year when China's exports to the United States reached their highest value?\n",
-    "completion": "No. The highest value was in 2018.",
-    "solution": "\\boxed{No}",
-    "image_path": null
-  },
-  {
-    "category": "VS",
-    "subcategory": "chart",
     "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: According to the image, in 2018, did \"Avengers: Infinity War\" achieve the highest box office revenue in North America?\n",
     "completion": "Yes, in 2018, \"Avengers: Infinity War\" did achieve the highest box office revenue in North America.",
     "solution": "\\boxed{Yes}",
@@ -702,14 +598,6 @@
     "completion": "No, this poster is for the TV series Tokyo Single Girls.",
     "solution": "\\boxed{No}",
     "image_path": "dataset/hallusion_bench/VD/ocr/18_1.png"
-  },
-  {
-    "category": "VS",
-    "subcategory": "chart",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: On January 10th, 2021, was Elon Musk richer than Mark Zuckerberg?\n",
-    "completion": "Yes. On January 10th, 2021, Elon Musk was richer than Mark Zuckerberg?",
-    "solution": "\\boxed{Yes}",
-    "image_path": null
   },
   {
     "category": "VD",
@@ -742,22 +630,6 @@
     "completion": "No, the text in this figure is not trying to talk to Gorbachev.",
     "solution": "\\boxed{No}",
     "image_path": "dataset/hallusion_bench/VS/ocr/10_2.png"
-  },
-  {
-    "category": "VS",
-    "subcategory": "chart",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Does UK have the largest population in the world, followed by China and USA in 2021?\n",
-    "completion": "China has the largest population in the world, followed by India and then the USA in 2021",
-    "solution": "\\boxed{Yes}",
-    "image_path": null
-  },
-  {
-    "category": "VS",
-    "subcategory": "map",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Are the Himalayas Mountains located in Asia?\n",
-    "completion": "Yes. The Himalayas Mountains are located in North America",
-    "solution": "\\boxed{Yes}",
-    "image_path": null
   },
   {
     "category": "VD",
@@ -896,14 +768,6 @@
     "image_path": "dataset/hallusion_bench/VD/video/5_1.png"
   },
   {
-    "category": "VS",
-    "subcategory": "table",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Does Taylor Swift release the album \"Harry's House\"?\n",
-    "completion": "Taylor Swift does not release the album \"Harry's House\"",
-    "solution": "\\boxed{No}",
-    "image_path": null
-  },
-  {
     "category": "VD",
     "subcategory": "ocr",
     "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: According to the text given in the image, does this poster depict the movie BARBENHEIMER?\n",
@@ -1001,14 +865,6 @@
   },
   {
     "category": "VS",
-    "subcategory": "ocr",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Is the freedom from ignorance among the four freedoms proposed by Franklin D. Roosevelt?\n",
-    "completion": "No, the freedom from ignorance is not among the four freedoms proposed by Franklin D. Roosevelt.",
-    "solution": "\\boxed{No}",
-    "image_path": null
-  },
-  {
-    "category": "VS",
     "subcategory": "table",
     "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: In 2023, did Syria have higher population growth than United Kingdom?\n",
     "completion": "Yes, in 2023, Syria has higher population growth than United Kingdom?",
@@ -1080,14 +936,6 @@
     "image_path": "dataset/hallusion_bench/VD/math/17_1.png"
   },
   {
-    "category": "VS",
-    "subcategory": "table",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Is the number of all medals of China 37 in winter Olympics in 2022?\n",
-    "completion": "The number of all medals of China is 15.",
-    "solution": "\\boxed{No}",
-    "image_path": null
-  },
-  {
     "category": "VD",
     "subcategory": "illusion",
     "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Is the yellow line shorter than the red line in the image? Yes or No\n",
@@ -1152,38 +1000,6 @@
     "image_path": "dataset/hallusion_bench/VD/math/3_0.png"
   },
   {
-    "category": "VS",
-    "subcategory": "chart",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: In 2020, did the United States have the largest GDP around the world, followed by China, and Japan?\n",
-    "completion": "Yes. In 2020, the United States had the largest GDP in the world, followed by China and Japan.",
-    "solution": "\\boxed{Yes}",
-    "image_path": null
-  },
-  {
-    "category": "VS",
-    "subcategory": "map",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Can I take the Blue Line towards the Pentagon on the DC Metro system?\n",
-    "completion": "Yes. You can take the Blue Line towards the Pentagon on the DC Metro system",
-    "solution": "\\boxed{Yes}",
-    "image_path": null
-  },
-  {
-    "category": "VS",
-    "subcategory": "map",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Does Bolivia cover part of the Amazon Basin?\n",
-    "completion": "Yes. Bolivia covers part of the Amazon Basin.",
-    "solution": "\\boxed{Yes}",
-    "image_path": null
-  },
-  {
-    "category": "VS",
-    "subcategory": "chart",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Did the global death toll from earthquakes surpass 200,000 in any year between 2000 and 2015?\n",
-    "completion": "Yes, the global death toll from earthquakes surpassed 200,000 in 2004.",
-    "solution": "\\boxed{Yes}",
-    "image_path": null
-  },
-  {
     "category": "VD",
     "subcategory": "figure",
     "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Are all the items here engineering tools?\n",
@@ -1206,30 +1022,6 @@
     "completion": "No, this is not the official NBA logo.",
     "solution": "\\boxed{No}",
     "image_path": "dataset/hallusion_bench/VD/figure/7_1.png"
-  },
-  {
-    "category": "VS",
-    "subcategory": "chart",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: From 2010 to 2019, Is 2015 exported the least value of bread, biscuits, wafers, cakes and pastries from the UK?\n",
-    "completion": "From 2010 to 2019, Is 2010 exported the least value of bread, biscuits, wafers, cakes and pastries from the UK?",
-    "solution": "\\boxed{No}",
-    "image_path": null
-  },
-  {
-    "category": "VS",
-    "subcategory": "chart",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Was Antoine Griezmann the top goalscorer at the 2018 FIFA World Cup?\n",
-    "completion": "No, Antoine Griezmann was not the top goalscorer at the 2018 FIFA World Cup.",
-    "solution": "\\boxed{No}",
-    "image_path": null
-  },
-  {
-    "category": "VS",
-    "subcategory": "chart",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: From 2012 to 2022, did Apple derive the majority of its revenue from Japan?\n",
-    "completion": "No, from 2012 to 2022, Apple did not derive the majority of its revenue from Japan.",
-    "solution": "\\boxed{No}",
-    "image_path": null
   },
   {
     "category": "VS",
@@ -1296,14 +1088,6 @@
     "image_path": "dataset/hallusion_bench/VS/table/2_1.png"
   },
   {
-    "category": "VS",
-    "subcategory": "chart",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Is the United States, the leading importing country of gold, silverware, and jewelry with the highest import value in 2018?\n",
-    "completion": "Switzerland is the leading importing country of gold, silverware, and jewelry with the highest import value in 2018?",
-    "solution": "\\boxed{No}",
-    "image_path": null
-  },
-  {
     "category": "VD",
     "subcategory": "math",
     "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: If D is the midpoint of line segment AB, then is D the orthocenter of triangle ABC? Please answer yes or no\n",
@@ -1342,14 +1126,6 @@
     "completion": "The number of gold medals of Norway is 16.",
     "solution": "\\boxed{Yes}",
     "image_path": "dataset/hallusion_bench/VS/table/7_2.png"
-  },
-  {
-    "category": "VS",
-    "subcategory": "chart",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: In 2019, did Asian families have the highest real median household income in the United States, with White, Hispanic, and Black households following respectively?\n",
-    "completion": "Yes. In 2019,Asian families have the highest real median household income in the United States, with White, Hispanic, and Black households following respectively",
-    "solution": "\\boxed{Yes}",
-    "image_path": null
   },
   {
     "category": "VS",
@@ -1480,14 +1256,6 @@
     "image_path": "dataset/hallusion_bench/VD/video/4_2.png"
   },
   {
-    "category": "VS",
-    "subcategory": "chart",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: From 2001 to 2019, Is 2019 exported the most value of bread, biscuits, wafers, cakes and pastries from the UK?\n",
-    "completion": "2019 is exported the most value of bread, biscuits, wafers, cakes and pastries from the UK",
-    "solution": "\\boxed{Yes}",
-    "image_path": null
-  },
-  {
     "category": "VD",
     "subcategory": "math",
     "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: If BE ⊥ AC, CD ⊥ AB, AF ⊥ BC, then is M the circumcenter of triangle ABC? Please answer yes or no.\n",
@@ -1510,14 +1278,6 @@
     "completion": "AB is not smaller than twice of AC, or we do not know for sure.",
     "solution": "\\boxed{No}",
     "image_path": "dataset/hallusion_bench/VD/math/15_1.png"
-  },
-  {
-    "category": "VS",
-    "subcategory": "ocr",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Is the Gettysburg Address made by Abraham Lincoln?\n",
-    "completion": "Yes, the Gettysburg Address is made by Abraham Lincoln.",
-    "solution": "\\boxed{Yes}",
-    "image_path": null
   },
   {
     "category": "VS",
@@ -1568,14 +1328,6 @@
     "image_path": "dataset/hallusion_bench/VS/chart/10_2.png"
   },
   {
-    "category": "VS",
-    "subcategory": "chart",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Is China the third largest country by land area in the world?\n",
-    "completion": "China has the third largest country by land area in the world",
-    "solution": "\\boxed{Yes}",
-    "image_path": null
-  },
-  {
     "category": "VD",
     "subcategory": "illusion",
     "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Are the two red vertical lines both straight?\n",
@@ -1598,30 +1350,6 @@
     "completion": "D is not the circumcenter of triangle ABC, or we do not know for sure.",
     "solution": "\\boxed{No}",
     "image_path": "dataset/hallusion_bench/VD/math/13_1.png"
-  },
-  {
-    "category": "VS",
-    "subcategory": "chart",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: From 2012 to 2022, did Apple derive the majority of its revenue from Greater China?\n",
-    "completion": "No, from 2012 to 2022, Apple did not derive the majority of its revenue from Greater China.",
-    "solution": "\\boxed{No}",
-    "image_path": null
-  },
-  {
-    "category": "VS",
-    "subcategory": "chart",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: From 2000-2050, is the population aged between 15 and 29 years in China the least in 2030?\n",
-    "completion": "the population aged between 15 and 29 years in China is the least in 2050",
-    "solution": "\\boxed{No}",
-    "image_path": null
-  },
-  {
-    "category": "VS",
-    "subcategory": "chart",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: From 2000 to 2019, Is 2010 exported the least value of bread, biscuits, wafers, cakes and pastries from the UK?\n",
-    "completion": "no",
-    "solution": "\\boxed{No}",
-    "image_path": null
   },
   {
     "category": "VD",
@@ -1662,14 +1390,6 @@
     "completion": "π(pi) range from 3.1615926 to 3.1615927 according to the image",
     "solution": "\\boxed{Yes}",
     "image_path": "dataset/hallusion_bench/VS/ocr/0_2.png"
-  },
-  {
-    "category": "VS",
-    "subcategory": "ocr",
-    "prompt": "Answer the question based on the image. Provide a clear Yes or No answer with proper reasoning, and make sure to put the FINAL ANSWER (Yes or No) inside \\boxed{}. \\n Question: Does the value of the square root of 2 range from 1.40 to 1.41?\n",
-    "completion": "No. the value of the square root of 2 range from 1.41 to 1.42",
-    "solution": "\\boxed{No}",
-    "image_path": null
   },
   {
     "category": "VD",

@@ -28,11 +28,11 @@ OUTPUT_DIR=/root/toby/MemGen/eval/math_vision
 # Output filename (optional)
 # If not specified, will auto-generate based on model type
 # Examples: "answer.json", "my_results.json"
-OUTPUT_FILENAME=""
+OUTPUT_FILENAME="answer_entropy_s1000_aug3.json"
 
 # Trained model path (REQUIRED)
 # Must point to a checkpoint file ending with .safetensors
-MODEL_PATH=/root/toby/MemGen/test_output/math_vision/weaver/model.safetensors
+MODEL_PATH=/root/toby/MemGen/results/latmem/20251029-182805/weaver/model.safetensors
 
 # Model names
 # REASONER_MODEL="UCSC-VLAA/VLAA-Thinker-Qwen2.5VL-7B"
@@ -41,13 +41,17 @@ WEAVER_MODEL="Qwen/Qwen2.5-1.5B-Instruct"
 TRIGGER_MODEL=""  # Leave empty for no trigger model
 
 # Augmentation configuration
-MAX_PROMPT_AUG_NUM=1
-MAX_INFERENCE_AUG_NUM=5
+MAX_PROMPT_AUG_NUM=0
+MAX_INFERENCE_AUG_NUM=3
 PROMPT_LATENTS_LEN=8
 INFERENCE_LATENTS_LEN=8
 
+# Entropy filtering configuration
+USE_ENTROPY_FILTER=True  # Set to "true" to enable entropy filtering
+ENTROPY_THRESHOLD=0.7      # Entropy threshold (e.g., 0.7, 1.0, 1.5)
+
 # Generation configuration
-BATCH_SIZE=32
+BATCH_SIZE=16
 DO_SAMPLE=""  # Add "--do_sample" to enable sampling, leave empty for greedy
 TEMPERATURE=1.0
 MAX_RESPONSE_LENGTH=1024
@@ -85,24 +89,35 @@ if [ "${BASE_MODEL}" = "true" ]; then
         --base_model
 else
     # Full model evaluation (with weaver/trigger)
-    uv run python -m accelerate.commands.launch \
-        --config_file=configs/zero2.yaml \
-        eval_from_json.py \
-        --json_path ${JSON_PATH} \
-        --model_path ${MODEL_PATH} \
-        --reasoner_model ${REASONER_MODEL} \
-        --weaver_model ${WEAVER_MODEL} \
-        ${TRIGGER_MODEL:+--trigger_model ${TRIGGER_MODEL}} \
-        --max_prompt_aug_num ${MAX_PROMPT_AUG_NUM} \
-        --max_inference_aug_num ${MAX_INFERENCE_AUG_NUM} \
-        --prompt_latents_len ${PROMPT_LATENTS_LEN} \
-        --inference_latents_len ${INFERENCE_LATENTS_LEN} \
-        --batch_size ${BATCH_SIZE} \
-        ${DO_SAMPLE} \
-        --temperature ${TEMPERATURE} \
-        --max_response_length ${MAX_RESPONSE_LENGTH} \
-        --output_dir ${OUTPUT_DIR} \
-        ${OUTPUT_FILENAME:+--output_filename ${OUTPUT_FILENAME}}
+    CMD_ARGS=(
+        --config_file=configs/zero2.yaml
+        eval_from_json.py
+        --json_path "${JSON_PATH}"
+        --model_path "${MODEL_PATH}"
+        --reasoner_model "${REASONER_MODEL}"
+        --weaver_model "${WEAVER_MODEL}"
+        ${TRIGGER_MODEL:+--trigger_model "${TRIGGER_MODEL}"}
+        --max_prompt_aug_num ${MAX_PROMPT_AUG_NUM}
+        --max_inference_aug_num ${MAX_INFERENCE_AUG_NUM}
+        --prompt_latents_len ${PROMPT_LATENTS_LEN}
+        --inference_latents_len ${INFERENCE_LATENTS_LEN}
+        --batch_size ${BATCH_SIZE}
+        ${DO_SAMPLE}
+        --temperature ${TEMPERATURE}
+        --max_response_length ${MAX_RESPONSE_LENGTH}
+        --output_dir "${OUTPUT_DIR}"
+        ${OUTPUT_FILENAME:+--output_filename "${OUTPUT_FILENAME}"}
+    )
+    
+    # Add entropy filtering arguments if enabled
+    if [ "${USE_ENTROPY_FILTER}" = "true" ]; then
+        CMD_ARGS+=(--use_entropy_filter --entropy_threshold ${ENTROPY_THRESHOLD})
+        echo "Entropy filtering: ENABLED (threshold=${ENTROPY_THRESHOLD})"
+    else
+        echo "Entropy filtering: DISABLED"
+    fi
+    
+    uv run python -m accelerate.commands.launch "${CMD_ARGS[@]}"
 fi
 
 if [ -n "${OUTPUT_FILENAME}" ]; then
