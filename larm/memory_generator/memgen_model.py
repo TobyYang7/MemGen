@@ -18,6 +18,7 @@ import math
 from typing import Tuple, Optional, List, Union
 import logging
 import functools
+import os
 
 from larm.task.base_model import BaseModel
 from larm.common.registry import registry
@@ -31,6 +32,7 @@ from .utils import (
     log_trainable_params,
     get_entropy,
 )
+from .trainer.utils import tokens_to_readable
 
 # Decorator to log function calls in blue
 def log_function_call(func):
@@ -134,12 +136,6 @@ def is_conversation(input_ids: torch.Tensor, tokenizer) -> bool:
     # Check if the sequence contains at least one <|im_start|> and one <|im_end|>
     has_start = any(seq[i:i+len(im_start_ids)] == im_start_ids for i in range(len(seq) - len(im_start_ids) + 1))
     has_end   = any(seq[i:i+len(im_end_ids)]   == im_end_ids   for i in range(len(seq) - len(im_end_ids) + 1))
-    
-    logging.info(f"has_start: {has_start}, has_end: {has_end}")
-    # logging.info(f"seq: {seq}")
-    logging.info(f"im_start_ids: {im_start_ids}")
-    logging.info(f"im_end_ids: {im_end_ids}")
-
     return has_start and has_end
 
 
@@ -251,6 +247,8 @@ def check_ends_with_delimiter(
     return augmentation_decisions
 
 
+ 
+
 @registry.register_model("latmem")
 class LatentMemoryModel(BaseModel):
 
@@ -281,7 +279,9 @@ class LatentMemoryModel(BaseModel):
             reasoner_model_name, torch_dtype=torch.bfloat16, attn_implementation="flash_attention_2"
         )
         
-        self.processor = AutoProcessor.from_pretrained(reasoner_model_name)
+        min_pixels = 256 * 28 * 28
+        max_pixels = 512 * 28 * 28
+        self.processor = AutoProcessor.from_pretrained(reasoner_model_name, min_pixels=min_pixels, max_pixels=max_pixels)
         self.tokenizer = self.processor.tokenizer
         self.config = self.model.config
         
@@ -465,7 +465,7 @@ class LatentMemoryModel(BaseModel):
         augmentation_indices = self._select_augment_points_after_delimiter(
             input_ids, labels, delimiters, tokenizer, max_augment_num
         )
-        logging.info(f"augmentation_indices: {augmentation_indices}")
+        # logging.info(f"augmentation_indices: {augmentation_indices}")
         
         # origin inputs embeds (use fused embeddings when image inputs are provided)
         if pixel_values is not None:
@@ -514,12 +514,12 @@ class LatentMemoryModel(BaseModel):
             is_prompt_end_aug = (labels[:, aug_point_idx] != -100).all() and (labels[:, aug_point_idx-1] == -100).all().item()
             # Depending on type, use weaver to augment prompt or inference
             if is_prompt_end_aug:
-                logging.info(f"[augment] idx={aug_point_idx} TYPE=PROMPT")
+                # logging.info(f"[augment] idx={aug_point_idx} TYPE=PROMPT")
                 weaver_hidden_states, attn_mask, pos_ids = weaver.augment_prompt(
                     current_weaver_inputs_embeds, current_attention_mask, current_position_ids
                 )
             else:
-                logging.info(f"[augment] idx={aug_point_idx} TYPE=INFERENCE")
+                # logging.info(f"[augment] idx={aug_point_idx} TYPE=INFERENCE")
                 weaver_hidden_states, attn_mask, pos_ids = weaver.augment_inference(
                     current_weaver_inputs_embeds, current_attention_mask, current_position_ids
                 ) 
@@ -729,7 +729,6 @@ class LatentMemoryModel(BaseModel):
         forward_func = self._instructional_forward
         if is_conversation(input_ids, tokenizer):
             # For conversational data, mask assistant tokens in labels
-            logging.info("is_conversation: True")
             labels = postprocess_assistant_labels(input_ids, labels, tokenizer)
             forward_func = self._conversational_forward
         
@@ -742,6 +741,42 @@ class LatentMemoryModel(BaseModel):
             batch_input_ids = input_ids[i * batch_size: (i + 1) * batch_size]
             batch_attention_mask = attention_mask[i * batch_size: (i + 1) * batch_size]
             batch_labels = labels[i * batch_size: (i + 1) * batch_size]
+
+            # Debug logging: dump tokens and supervised segments before forward
+            # Only supports batch_size == 1 here
+            seq_ids = batch_input_ids[0].tolist()
+            label_row = batch_labels[0].tolist()
+
+            # Readable token dump（只输出 token，不含 id）
+            token_dump = tokens_to_readable(seq_ids, tokenizer)
+            num_supervised = sum(1 for x in label_row if x != -100)
+
+            # logging.info("[SFT DEBUG] ===== Input Tokens (len=%d) =====", len(seq_ids))
+            # logging.info("[SFT DEBUG] %s", token_dump)
+            # logging.info("[SFT DEBUG] supervised_count=%d", num_supervised)
+
+            # Compute contiguous supervised ranges
+            sup_indices = [idx for idx, v in enumerate(label_row) if v != -100]
+            ranges = []
+            if len(sup_indices) > 0:
+                start = sup_indices[0]
+                prev = sup_indices[0]
+                for idx_cur in sup_indices[1:]:
+                    if idx_cur == prev + 1:
+                        prev = idx_cur
+                    else:
+                        ranges.append((start, prev + 1))  # [start, end)
+                        start = idx_cur
+                        prev = idx_cur
+                ranges.append((start, prev + 1))
+
+            # logging.info("[SFT DEBUG] supervised_ranges (count=%d): %s", len(ranges), ranges)
+
+            # Dump tokens for each supervised range
+            for ridx, (s, e) in enumerate(ranges):
+                seg_ids = seq_ids[s:e]
+                seg_dump = tokens_to_readable(seg_ids, tokenizer)
+                # logging.info("[SFT DEBUG] range#%d %d:%d -> %s", ridx + 1, s, e, seg_dump)
 
             # Call the appropriate forward function (instruction or conversation)
             batch_logits, batch_supervised_labels = forward_func( # forward_func --> _forward
@@ -1117,9 +1152,9 @@ class LatentMemoryModel(BaseModel):
                     )
                     logits = outputs.logits  # [B, seq_len, vocab_size]
                     entropy_map = get_entropy(logits)  # [B, seq_len]
-                    logging.info(f"[Entropy Filter] Computed entropy for training, shape: {entropy_map.shape}")
+                    # logging.info(f"[Entropy Filter] Computed entropy for training, shape: {entropy_map.shape}")
             except Exception as e:
-                logging.warning(f"[Entropy Filter] Failed to compute entropy: {e}. Falling back to delimiter-only mode.")
+                # logging.warning(f"[Entropy Filter] Failed to compute entropy: {e}. Falling back to delimiter-only mode.")
                 entropy_map = None
 
         # Step 2: Identify augmentation candidates
@@ -1160,15 +1195,15 @@ class LatentMemoryModel(BaseModel):
                 high_entropy_candidates.sort(key=lambda x: x[1], reverse=True)
                 inference_augment_idx = [idx for idx, _ in high_entropy_candidates[:max_num]]
                 
-                logging.info(
-                    f"[Entropy Filter] Selected {len(inference_augment_idx)}/{len(inference_augment_candidates)} "
-                    f"augmentation points (threshold={self.entropy_threshold:.2f})"
-                )
+                # logging.info(
+                #     f"[Entropy Filter] Selected {len(inference_augment_idx)}/{len(inference_augment_candidates)} "
+                #     f"augmentation points (threshold={self.entropy_threshold:.2f})"
+                # )
                 
                 # Visualize selected positions with tokens
                 if len(high_entropy_candidates) > 0:
                     top_entropies = [ent for _, ent in high_entropy_candidates[:max_num]]
-                    logging.info(f"[Entropy Filter] Top entropies: {top_entropies}")
+                    # logging.info(f"[Entropy Filter] Top entropies: {top_entropies}")
                     
                     # Show tokens at selected positions (green) and rejected positions (default)
                     selected_set = set(inference_augment_idx)
@@ -1192,12 +1227,12 @@ class LatentMemoryModel(BaseModel):
                         else:
                             token_display.append(f"✗{token_text_display}(E:{ent:.2f})")
                     
-                    logging.info(f"[Entropy Filter] Tokens: {' | '.join(token_display)}")
+                    # logging.info(f"[Entropy Filter] Tokens: {' | '.join(token_display)}")
             else:
-                logging.warning(
-                    f"[Entropy Filter] No high-entropy positions found (threshold={self.entropy_threshold}). "
-                    f"Using delimiter-only mode."
-                )
+                # logging.warning(
+                #     f"[Entropy Filter] No high-entropy positions found (threshold={self.entropy_threshold}). "
+                #     f"Using delimiter-only mode."
+                # )
                 inference_augment_idx = [idx for idx, _ in inference_augment_candidates[:max_num]]
         else:
             # No entropy filtering, use all delimiter-based candidates
@@ -1292,10 +1327,10 @@ class LatentMemoryModel(BaseModel):
                             token_display = f"{color_code}[✓ #{candidate_count} {token_text_display}]{reset_code}"
                             status_text = f"{color_code}candidate=True (#{candidate_count}){reset_code}"
                             
-                            logging.info(
-                                f"[Entropy Filter Inference] Position {idx}: entropy={ent:.3f}, "
-                                f"threshold={self.entropy_threshold:.3f}, {status_text} {token_display}"
-                            )
+                            # logging.info(
+                            #     f"[Entropy Filter Inference] Position {idx}: entropy={ent:.3f}, "
+                            #     f"threshold={self.entropy_threshold:.3f}, {status_text} {token_display}"
+                            # )
             except Exception as e:
                 logging.warning(f"[Entropy Filter Inference] Failed to compute entropy: {e}. Using delimiter-only mode.")
                 candidates = ends_with_delimiters

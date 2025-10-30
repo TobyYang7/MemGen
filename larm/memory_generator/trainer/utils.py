@@ -76,6 +76,141 @@ def init_grpo_log_files(output_dir: str) -> tuple[str, str]:
     return grpo_log_file, grpo_jsonl_file
 
 
+def init_sft_log_files(output_dir: str) -> tuple[str, str]:
+    """Initialize SFT log files (human-readable txt and JSONL)."""
+    sft_log_file = os.path.join(output_dir, "../logs/sft_logs.txt")
+    sft_jsonl_file = os.path.join(output_dir, "../logs/sft_samples.jsonl")
+    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(sft_log_file), exist_ok=True)
+
+    # Create/clear the log file
+    with open(sft_log_file, "w", encoding="utf-8") as f:
+        f.write("=" * 80 + "\n")
+        f.write("SFT Training Logs - WeaverSFTTrainer\n")
+        f.write("=" * 80 + "\n\n")
+
+    # Create/clear the JSONL file
+    with open(sft_jsonl_file, "w", encoding="utf-8"):
+        pass
+
+    return sft_log_file, sft_jsonl_file
+
+
+def persist_sft_logs(
+    log_file: str,
+    jsonl_file: str,
+    step: int,
+    mode: str,
+    model_outputs: list[str],
+    solutions: list[str],
+    completions: list[str],
+) -> None:
+    """Append per-sample SFT logs (only model_output, solution, completion)."""
+    try:
+        n = min(len(model_outputs), len(solutions), len(completions))
+        if n == 0:
+            return
+
+        with open(log_file, "a", encoding="utf-8") as f_txt:
+            f_txt.write(f"\n{'='*80}\n")
+            f_txt.write(f"Step: {step} | Mode: {mode}\n")
+            f_txt.write(f"{'='*80}\n")
+            for idx in range(n):
+                f_txt.write(f"\n[Sample {idx}]\n")
+                f_txt.write(f"Model Output: {model_outputs[idx]}\n")
+                f_txt.write(f"Solution: {solutions[idx]}\n")
+                f_txt.write(f"Completion: {completions[idx]}\n")
+                f_txt.write(f"{'-'*80}\n")
+
+        with open(jsonl_file, "a", encoding="utf-8") as f_jsonl:
+            for idx in range(n):
+                record = {
+                    "step": int(step),
+                    "model_output": model_outputs[idx],
+                    "solution": solutions[idx],
+                    "completion": completions[idx],
+                }
+                f_jsonl.write(json.dumps(record, ensure_ascii=False, indent=2) + "\n")
+    except Exception as e:
+        logging.warning(f"Failed to persist SFT logs: {e}")
+
+def tokens_to_readable(token_ids: List[int], processing_class) -> str:
+    """Convert token IDs to a readable string with special tokens visible.
+
+    Only outputs token text (no token ids), while preserving special/vision markers.
+
+    Args:
+        token_ids: List of token ids to display (already masked/padded as needed)
+        processing_class: Tokenizer or processor (from which tokenizer can be obtained)
+    """
+    _tok = getattr(processing_class, "tokenizer", processing_class)
+
+    GREEN = "\033[92m"
+    RESET = "\033[0m"
+
+    # Vision token ids (known defaults) and dynamic lookup
+    vision_token_ids = [151652, 151653, 151654, 151655]  # <|vision_start|>, <|vision_end|>, <|video_pad|>, <|image_pad|>
+    for name in ["<|vision_start|>", "<|vision_end|>", "<|image_pad|>", "<|video_pad|>", "<|vision_pad|>"]:
+        try:
+            ids = _tok.encode(name, add_special_tokens=False)
+            if isinstance(ids, list) and len(ids) > 0 and ids[0] not in vision_token_ids:
+                vision_token_ids.append(ids[0])
+        except Exception:
+            pass
+
+    items: List[str] = []
+    prev_tid = None
+    consecutive_count = 0
+
+    def _flush_prev():
+        nonlocal consecutive_count, prev_tid
+        if consecutive_count > 0 and prev_tid is not None:
+            try:
+                prev_str = _tok.decode([prev_tid], skip_special_tokens=False)
+                items.append(f"{GREEN}[IMG]{prev_str.strip()}[/IMG]{RESET}×{consecutive_count + 1}")
+            except Exception:
+                items.append(f"{GREEN}[IMG]<img_pad>[/IMG]{RESET}×{consecutive_count + 1}")
+            consecutive_count = 0
+
+    for tid in token_ids:
+        try:
+            token_str = _tok.decode([tid], skip_special_tokens=False)
+            is_image_pad = tid == 151655 or (tid in vision_token_ids and 'pad' in token_str.lower())
+
+            if is_image_pad and prev_tid == tid:
+                consecutive_count += 1
+                continue
+            else:
+                _flush_prev()
+
+                if tid in vision_token_ids:
+                    if is_image_pad:
+                        prev_tid = tid
+                        consecutive_count = 0
+                        continue
+                    else:
+                        items.append(f"{GREEN}[IMG]{token_str.strip()}[/IMG]{RESET}")
+                elif hasattr(_tok, 'pad_token_id') and tid == _tok.pad_token_id:
+                    items.append("<|pad|>")
+                elif hasattr(_tok, 'eos_token_id') and tid == _tok.eos_token_id:
+                    items.append("<|eos|>")
+                elif hasattr(_tok, 'bos_token_id') and tid == _tok.bos_token_id:
+                    items.append("<|bos|>")
+                elif token_str.strip() in ["<|im_start|>", "<|im_end|>", "<|im_sep|>"]:
+                    items.append(token_str.strip())
+                else:
+                    # Only token text (repr to expose invisible characters); no id printed
+                    items.append(f"{repr(token_str)}")
+
+                prev_tid = tid
+        except Exception:
+            _flush_prev()
+            items.append("<?>")
+            prev_tid = tid
+
+    _flush_prev()
+    return " ".join(items)
+
 def log_prompt_truncation(
     prompts_before: torch.Tensor,
     prompts_after: torch.Tensor,

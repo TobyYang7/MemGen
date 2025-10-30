@@ -21,6 +21,7 @@ from larm.data.interactions.base_interaction import (
 
 from .memgen_model import LatentMemoryModel
 from .trainer.weaver_grpo_trainer import WeaverGRPOTrainer
+from .trainer.weaver_sft_trainer import WeaverSFTTrainer
 from .trainer.trigger_grpo_trainer import TriggerGRPOTrainer
 from .utils import (
     fix_model_parameters,
@@ -152,6 +153,9 @@ class LatentMemoryRunner(BaseRunner):
     def _prepare_mm_features(self, dataset: Dataset) -> Dataset:
         processor = self.processing_class  # AutoProcessor for VL models
         tokenizer = getattr(processor, "tokenizer", processor)
+        # Truncation budgets: ensure prompt (A) and completion (B) are bounded separately for SFT
+        max_start_len = getattr(self.interaction_config, "max_start_length", 1024)
+        max_resp_len = getattr(self.interaction_config, "max_response_length", 512)
 
         # Cache vision token IDs to avoid repeated encoding
         # For Qwen2.5-VL, check what vision tokens are actually used
@@ -264,8 +268,21 @@ class LatentMemoryRunner(BaseRunner):
             enc_comp = tokenizer(text=[completion], add_special_tokens=False, return_tensors="pt")
             comp_ids = enc_comp["input_ids"][0]
 
+            # ===== Enforce per-part budgets =====
+            # 1) Clip completion (B) length to max_resp_len (right-side clip)
+            if max_resp_len is not None and comp_ids.numel() > max_resp_len:
+                comp_ids = comp_ids[:max_resp_len]
+
+            # 2) Clip prompt (A) length to max_start_len (left-side clip to keep the tail with vision/user tokens)
+            if max_start_len is not None and prompt_ids.numel() > max_start_len:
+                # keep last max_start_len tokens
+                prompt_ids = prompt_ids[-max_start_len:]
+                if prompt_mask is not None and prompt_mask.numel() == enc_prompt["attention_mask"][0].numel():
+                    prompt_mask = prompt_mask[-max_start_len:]
+
             input_ids = torch.cat([prompt_ids, comp_ids], dim=0)
             attention_mask = torch.cat([prompt_mask, torch.ones_like(comp_ids)], dim=0)
+            # labels supervise only on B (up to max_resp_len)
             labels = torch.cat([torch.full_like(prompt_ids, -100), comp_ids.clone()], dim=0)
 
             # For Qwen2.5-VL: image tokens are NOT explicitly in input_ids
@@ -549,7 +566,7 @@ class LatentMemoryRunner(BaseRunner):
         # SFT Trainer
         if self.train_weaver_method == "sft":
             # JSONL log path under save_dir
-            weaver_trainer = SFTTrainer(
+            weaver_trainer = WeaverSFTTrainer(
                 model=self.model,
                 args=self.weaver_training_args,
                 train_dataset=self.weaver_train_dataset,
@@ -956,12 +973,23 @@ class LatentMemoryRunner(BaseRunner):
             output_dir=eval_dir, batch_size=eval_batch_size, generation_config=self.interaction_config
         )
 
-        # Align GRPO generation configuration with the interaction configuration:
-        # All generation-related settings are controlled by the interaction config.
+        # Align generation configuration with the interaction configuration
+        # GRPO: prompt/response lengths; SFT: use combined length so prompt (incl. image tokens) won't eat completion budget
         if (self.train_weaver and self.train_weaver_method == "grpo"):
             self.weaver_training_args.max_prompt_length = self.interaction_config.max_start_length
             self.weaver_training_args.max_completion_length = self.interaction_config.max_response_length
             self.weaver_training_args.temperature = self.interaction_config.temperature
+        elif (self.train_weaver and self.train_weaver_method == "sft"):
+            try:
+                combined_len = int(self.interaction_config.max_start_length) + int(self.interaction_config.max_response_length)
+                # Ensure not smaller than any pre-set value
+                prev_len = getattr(self.weaver_training_args, "max_length", None)
+                if prev_len is None or combined_len != prev_len:
+                    self.weaver_training_args.max_length = combined_len
+                    # logging.info(f"[SFT] Set max_length to max_start_length+max_response_length = {combined_len}")
+            except Exception:
+                # Fallback silently if interaction_config not fully available
+                pass
         elif (self.train_trigger and self.train_trigger_method == "grpo"):
             self.trigger_training_args.max_prompt_length = self.interaction_config.max_start_length
             self.trigger_training_args.max_completion_length = self.interaction_config.max_response_length
@@ -980,14 +1008,18 @@ class LatentMemoryRunner(BaseRunner):
         logging_strategy = config_dict.get("logging_strategy", "steps")
         logging_steps = config_dict.get("logging_steps", 1) if logging_strategy == "steps" else None
 
-        eval_strategy = config_dict.get("eval_strategy", "steps")
-        eval_steps = config_dict.get("eval_steps", 200) if eval_strategy == "steps" else None
+        # Support both keys; default to "no" (disable eval) if unspecified
+        unified_eval_strategy = config_dict.get("eval_strategy", config_dict.get("evaluation_strategy", "no"))
+        # Normalize YAML booleans (YAML parses unquoted 'no'/'yes')
+        if isinstance(unified_eval_strategy, bool):
+            unified_eval_strategy = "no" if unified_eval_strategy is False else "steps"
+        eval_steps = config_dict.get("eval_steps", 200) if unified_eval_strategy == "steps" else None
 
         save_strategy = config_dict.get("save_strategy", "steps")
         save_steps = config_dict.get("save_steps", 200) if save_strategy == "steps" else None
 
-        # Disable load_best_model_at_end when eval_strategy is "no" to avoid evaluation at the end of training
-        load_best_model = False if eval_strategy == "no" else True
+        # Disable load_best_model_at_end when evaluation is disabled
+        load_best_model = False if unified_eval_strategy == "no" else True
 
         # common args dict
         args_dict = {
@@ -1004,7 +1036,8 @@ class LatentMemoryRunner(BaseRunner):
             "logging_steps": logging_steps,
             "save_strategy": save_strategy,
             "save_steps": save_steps,
-            "eval_strategy": eval_strategy,
+            # Use eval_strategy for TRL SFTConfig compatibility
+            "eval_strategy": unified_eval_strategy,
             "eval_steps": eval_steps,
             "report_to": ["wandb"] if use_tensorboard else [],   # Report metrics to wandb when enabled
             "remove_unused_columns": False,

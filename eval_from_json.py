@@ -375,16 +375,13 @@ def evaluate(args):
                 processor = model.processor
                 has_images = any(img is not None for img in images_list)
                 
-                # Set padding side to left for decoder-only models
-                original_padding_side = processor.tokenizer.padding_side
-                processor.tokenizer.padding_side = "left"
-                
                 # Apply chat template
                 texts = [processor.apply_chat_template(m, tokenize=False, add_generation_prompt=True) 
                          for m in messages_list]
                 
-                # Tokenize
+                # Tokenize (match training code behavior)
                 if has_images:
+                    # When images are present, don't set padding_side (use default)
                     inputs = processor(
                         text=texts,
                         images=images_list,
@@ -392,15 +389,14 @@ def evaluate(args):
                         padding=True,
                     )
                 else:
+                    # Text-only: set padding_side="left" and add_special_tokens=True
                     inputs = processor(
                         text=texts,
                         return_tensors="pt",
                         padding=True,
+                        padding_side="left",
                         add_special_tokens=True
                     )
-                
-                # Restore original padding side
-                processor.tokenizer.padding_side = original_padding_side
                 
                 # Move to device
                 input_ids = inputs["input_ids"].to(accelerator.device)
@@ -463,7 +459,7 @@ def evaluate(args):
                 
                 # Record results (only on main process to avoid duplication)
                 if accelerator.is_main_process:
-                    for example, response, aug_info in zip(batch, responses, augmentation_info_list):
+                    for idx, (example, response, aug_info) in enumerate(zip(batch, responses, augmentation_info_list)):
                         prompt = example["prompt"]
                         ground_truth = example.get("solution", example.get("completion", ""))
                         
@@ -481,12 +477,18 @@ def evaluate(args):
                         all_predictions.append(response)
                         all_ground_truths.append(ground_truth)
                         
-                        logging.debug(f"Prompt: {prompt[:100]}...")
-                        logging.debug(f"Response: {response}")
-                        logging.debug(f"Ground truth: {ground_truth}")
+                        # Log to CLI (INFO level so it shows by default)
+                        sample_num = len(all_results)
+                        logging.info("=" * 80)
+                        logging.info(f"Sample #{sample_num}")
+                        logging.info("-" * 80)
+                        logging.info(f"Prompt: {prompt[:200]}{'...' if len(prompt) > 200 else ''}")
+                        logging.info(f"Ground Truth: {ground_truth[:200]}{'...' if len(ground_truth) > 200 else ''}")
+                        logging.info("-" * 80)
+                        logging.info(f"Model Output:\n{response}")
                         if not args.base_model and aug_info is not None:
-                            logging.debug(f"Augmentation positions: {aug_info}")
-                        logging.debug("-" * 80)
+                            logging.info(f"Augmentation: {aug_info}")
+                        logging.info("=" * 80 + "\n")
                     
                     # Update progress bar with number of samples processed
                     pbar.update(len(batch))
