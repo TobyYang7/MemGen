@@ -81,13 +81,13 @@ run:
       # optimizer configs
       optim: adamw_torch
       schedular: cosine
-      warmup_ratio: 0.1
+      warmup_ratio: 0.05
       lr: 1e-5
       
       # logging
       logging_strategy: steps
       logging_steps: 1
-      eval_strategy: epoch
+      eval_strategy: False
       eval_steps: 100
       save_strategy: epoch
       save_steps: 100
@@ -157,7 +157,7 @@ run:
   # generation config for GRPO training and evaluation
   generation:
     max_turns: 1
-    max_start_length: 512     # Maximum length of the initial prompt.
+    max_start_length: 4096     # Maximum length of the initial prompt.
     max_prompt_length: 4096    # Maximum prompt length during multi-turn interactions (includes all conversation history across turns).
     max_response_length: 1024
     max_obs_length: 512

@@ -9,50 +9,46 @@ export NCCL_IB_DISABLE=1
 export NCCL_P2P_DISABLE=0
 export NCCL_ASYNC_DISABLE=1
 export TORCH_DISTRIBUTED_DEBUG=OFF
-export LOG_FILE_ONLY=1
+export LOG_FILE_ONLY=1  # Set to 0 to enable CLI output, 1 for file-only logging
 
 # ===== Configuration =====
 
 # Base model evaluation (optional)
 # Set to "true" to evaluate only the base reasoner model without weaver/trigger
 # Set to "false" or leave empty to evaluate the full trained model
-BASE_MODEL="false"
+# BASE_MODEL="true"
 
 # JSON file to evaluate (REQUIRED)
 # This should be a JSON file with format: [{"prompt": "...", "solution": "...", "image_path": "..."}]
-JSON_PATH=/root/toby/MemGen/data/math_vision/test.json
+JSON_PATH=data/mm_math/test.json
 
 # Output directory
-OUTPUT_DIR=/root/toby/MemGen/eval/math_vision
-
-# Output filename (optional)
-# If not specified, will auto-generate based on model type
-# Examples: "answer.json", "my_results.json"
-OUTPUT_FILENAME="answer_entropy_s1000_aug3.json"
-
-# Trained model path (REQUIRED)
-# Must point to a checkpoint file ending with .safetensors
-MODEL_PATH=/root/toby/MemGen/results/latmem/20251029-182805/weaver/model.safetensors
+OUTPUT_DIR=eval/mm_math
+MODEL_PATH=test_output/mm_math/weaver/model.safetensors
 
 # Model names
 # REASONER_MODEL="UCSC-VLAA/VLAA-Thinker-Qwen2.5VL-7B"
+# REASONER_MODEL=test_output/mm_math/weaver
+# WEAVER_MODEL=test_output/mm_math/weaver
+
 REASONER_MODEL="Qwen/Qwen2.5-VL-7B-Instruct"
 WEAVER_MODEL="Qwen/Qwen2.5-1.5B-Instruct"
-TRIGGER_MODEL=""  # Leave empty for no trigger model
 
 # Augmentation configuration
-MAX_PROMPT_AUG_NUM=0
-MAX_INFERENCE_AUG_NUM=3
-PROMPT_LATENTS_LEN=8
-INFERENCE_LATENTS_LEN=8
+MAX_PROMPT_AUG_NUM=1
+MAX_INFERENCE_AUG_NUM=5
+PROMPT_LATENTS_LEN=16
+INFERENCE_LATENTS_LEN=16
 
 # Entropy filtering configuration
-USE_ENTROPY_FILTER=True  # Set to "true" to enable entropy filtering
+USE_ENTROPY_FILTER="true"  # Set to "true" to enable entropy filtering
 ENTROPY_THRESHOLD=0.7      # Entropy threshold (e.g., 0.7, 1.0, 1.5)
+OUTPUT_FILENAME="answer_e${ENTROPY_THRESHOLD}_p${MAX_PROMPT_AUG_NUM}_i${MAX_INFERENCE_AUG_NUM}_len${PROMPT_LATENTS_LEN}.json"
+
 
 # Generation configuration
-BATCH_SIZE=16
-DO_SAMPLE=""  # Add "--do_sample" to enable sampling, leave empty for greedy
+BATCH_SIZE=8
+# DO_SAMPLE="--do_sample"  # Add "--do_sample" to enable sampling, leave empty for greedy
 TEMPERATURE=1.0
 MAX_RESPONSE_LENGTH=1024
 
