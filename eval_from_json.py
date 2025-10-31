@@ -18,6 +18,7 @@ import json
 import argparse
 import logging
 import torch
+import multiprocessing as mp
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 from tqdm import tqdm
@@ -31,7 +32,7 @@ from functools import partial
 # Import necessary modules from the codebase
 from larm.memory_generator.memgen_model import LatentMemoryModel
 from larm.memory_generator.utils import load_state_dict_from_safetensor, THINK_SYS_PROMPT
-from larm.memory_generator.trainer.utils import extract_answer
+from larm.memory_generator.trainer.utils import extract_answer, tokens_to_readable
 from larm.memory_generator.trainer.verifier import verify_solution_equivalence
 
 
@@ -121,7 +122,9 @@ def build_model(args):
             torch_dtype=torch.bfloat16,
             attn_implementation="flash_attention_2"
         )
-        processor = AutoProcessor.from_pretrained(args.reasoner_model)
+        min_pixels = 256 * 28 * 28
+        max_pixels = 512 * 28 * 28
+        processor = AutoProcessor.from_pretrained(args.reasoner_model, min_pixels=min_pixels, max_pixels=max_pixels)
         
         # Add processor and tokenizer as attributes for compatibility
         model.processor = processor
@@ -282,6 +285,14 @@ def evaluate(args):
     
     # Build model
     model = build_model(args)
+    # Ensure decoder-only models use left padding
+    try:
+        if hasattr(model, "tokenizer") and model.tokenizer is not None:
+            model.tokenizer.padding_side = "left"
+        if hasattr(model, "processor") and hasattr(model.processor, "tokenizer") and model.processor.tokenizer is not None:
+            model.processor.tokenizer.padding_side = "left"
+    except Exception as e:
+        logging.warning(f"Failed to set padding_side to left: {e}")
     model = accelerator.prepare_model(model=model, evaluation_mode=True)
     model.eval()
     
@@ -320,10 +331,30 @@ def evaluate(args):
         }
     logging.info(f"Model configuration: {augment_info}")
     
-    # Store all results (only on main process)
-    all_results = []
-    all_predictions = []
-    all_ground_truths = []
+    # Prepare output files (main process only) and running metrics
+    if accelerator.is_main_process:
+        # Generate output filename early
+        if args.output_filename:
+            output_filename = args.output_filename
+            if not output_filename.endswith('.json'):
+                output_filename += '.json'
+        elif args.base_model:
+            model_name = args.reasoner_model.replace("/", "_").replace("-", "_").replace(".", "_")
+            output_filename = f"answer_{model_name}.json"
+        else:
+            output_filename = "answer.json"
+        output_file = os.path.join(args.output_dir, output_filename)
+        # We'll write samples in real-time to a temp file, then prepend summary at the end
+        samples_file = output_file + ".samples.tmp"
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        f_samples = open(samples_file, 'w', encoding='utf-8')
+    else:
+        output_file = None
+        samples_file = None
+        f_samples = None
+    
+    correct_count = 0
+    total_count = 0
     
     # Evaluation loop
     logging.info("Starting evaluation loop...")
@@ -376,7 +407,7 @@ def evaluate(args):
                 has_images = any(img is not None for img in images_list)
                 
                 # Apply chat template
-                texts = [processor.apply_chat_template(m, tokenize=False, add_generation_prompt=True) 
+                texts = [processor.apply_chat_template(m, tokenize=False, add_generation_prompt=True)
                          for m in messages_list]
                 
                 # Tokenize (match training code behavior)
@@ -387,6 +418,7 @@ def evaluate(args):
                         images=images_list,
                         return_tensors="pt",
                         padding=True,
+                        padding_side="left",
                     )
                 else:
                     # Text-only: set padding_side="left" and add_special_tokens=True
@@ -414,6 +446,27 @@ def evaluate(args):
                     gen_kwargs["pixel_values"] = inputs["pixel_values"].to(accelerator.device).to(torch.bfloat16)
                 if "image_grid_thw" in inputs:
                     gen_kwargs["image_grid_thw"] = inputs["image_grid_thw"].to(accelerator.device)
+                
+                # Log input tokens passed to model using tokens_to_readable
+                try:
+                    B = input_ids.size(0)
+                    L = input_ids.size(1)
+                    logging.info(f"[EVAL GEN] Batch size: {B}, Seq len: {L}, Has images: {has_images}")
+                    # Log up to first 4 samples for brevity
+                    max_samples_to_log = min(B, 4)
+                    for i in range(max_samples_to_log):
+                        ids_i = input_ids[i].tolist()
+                        attn_i = attention_mask[i].tolist()
+                        nonpad_len = int(sum(attn_i))
+                        left_pad = len(attn_i) - nonpad_len
+                        tail_n = min(128, nonpad_len if nonpad_len > 0 else L)
+                        tail_ids = ids_i[-tail_n:]
+                        readable_tail = tokens_to_readable(ids_i, getattr(model, 'processor', getattr(model, 'tokenizer', None)))
+                        logging.info(f"[EVAL GEN] [Sample {i}] left_pad={left_pad}, nonpad={nonpad_len}")
+                        logging.info(f"[EVAL GEN] [Sample {i}] Prompt tail token IDs (last {tail_n}): {tail_ids}")
+                        logging.info(f"[EVAL GEN] [Sample {i}] Prompt tail tokens (readable): {readable_tail}")
+                except Exception as e:
+                    logging.warning(f"Failed to log gen_kwargs tokens: {e}")
                 
                 # Generate
                 augmentation_info_list = []  # Store augmentation positions for each sample
@@ -457,38 +510,61 @@ def evaluate(args):
                 # Decode
                 responses = model.tokenizer.batch_decode(responses_ids, skip_special_tokens=True)
                 
-                # Record results (only on main process to avoid duplication)
+                # Record results and verify per-batch (only on main process)
                 if accelerator.is_main_process:
-                    for idx, (example, response, aug_info) in enumerate(zip(batch, responses, augmentation_info_list)):
-                        prompt = example["prompt"]
+                    # Prepare data for verification
+                    preds = []
+                    gts = []
+                    for example, response in zip(batch, responses):
                         ground_truth = example.get("solution", example.get("completion", ""))
+                        preds.append(response)
+                        gts.append(ground_truth)
+                    
+                    # Parallel verify within the batch
+                    detailed_results = [None] * len(preds)
+                    try:
+                        with ProcessPoolExecutor(max_workers=min(8, len(preds))) as executor:
+                            futures = {executor.submit(_compute_single_accuracy, pred, gt, i): i for i, (pred, gt) in enumerate(zip(preds, gts))}
+                            for future in as_completed(futures):
+                                res = future.result()
+                                detailed_results[res["idx"]] = res
+                    except Exception as e:
+                        logging.warning(f"Batch verification failed, falling back to sequential: {e}")
+                        for i, (pred, gt) in enumerate(zip(preds, gts)):
+                            detailed_results[i] = _compute_single_accuracy(pred, gt, i)
+                    
+                    # Write each sample immediately
+                    for i, (example, response, aug_info, verify_res) in enumerate(zip(batch, responses, augmentation_info_list, detailed_results)):
+                        prompt = example["prompt"]
+                        ground_truth = gts[i]
+                        image_path = example.get("image_path")
                         
+                        # Mark augmented samples to match SFT trainer convention
+                        has_augmentation = (not args.base_model) and (aug_info is not None) and (aug_info != "no_augmentation")
+                        prompt_to_save = f"<AUG> {prompt}" if has_augmentation else prompt
+                        response_to_save = f"<AUG> {response}" if has_augmentation else response
+                        
+                        # Decide correctness directly from verifier result
+                        is_correct = bool(verify_res.get("correct", False))
+
                         result = {
-                            "prompt": prompt,
-                            "response": response,
+                            "system_prompt": THINK_SYS_PROMPT,
+                            "prompt": prompt_to_save,
+                            "response": response_to_save,
                             "ground_truth": ground_truth,
+                            "image_path": image_path,
+                            "extracted_answer": verify_res.get("extracted_answer", ""),
+                            "correct": is_correct,
                         }
-                        
-                        # Add augmentation info for non-base models
                         if not args.base_model and aug_info is not None:
                             result["augmentation_positions"] = aug_info
                         
-                        all_results.append(result)
-                        all_predictions.append(response)
-                        all_ground_truths.append(ground_truth)
+                        f_samples.write(json.dumps(result, indent=2, ensure_ascii=False) + '\n')
+                        f_samples.flush()
                         
-                        # Log to CLI (INFO level so it shows by default)
-                        sample_num = len(all_results)
-                        logging.info("=" * 80)
-                        logging.info(f"Sample #{sample_num}")
-                        logging.info("-" * 80)
-                        logging.info(f"Prompt: {prompt[:200]}{'...' if len(prompt) > 200 else ''}")
-                        logging.info(f"Ground Truth: {ground_truth[:200]}{'...' if len(ground_truth) > 200 else ''}")
-                        logging.info("-" * 80)
-                        logging.info(f"Model Output:\n{response}")
-                        if not args.base_model and aug_info is not None:
-                            logging.info(f"Augmentation: {aug_info}")
-                        logging.info("=" * 80 + "\n")
+                        total_count += 1
+                        if is_correct:
+                            correct_count += 1
                     
                     # Update progress bar with number of samples processed
                     pbar.update(len(batch))
@@ -504,62 +580,44 @@ def evaluate(args):
     if accelerator.is_main_process:
         pbar.close()
     
-    # Only main process computes metrics and saves results
+    # Only main process writes final file with summary on top and closes files
     if accelerator.is_main_process:
-        # Compute metrics using the same method as training
-        logging.info("Computing accuracy using training method (extract_answer + verify_solution_equivalence)...")
-        accuracy, correct_count, total_count, detailed_results = compute_accuracy(all_predictions, all_ground_truths)
-        
-        # Merge detailed results into all_results
-        for i, (result, detail) in enumerate(zip(all_results, detailed_results)):
-            result.update(detail)
-        
-        # Generate output filename
-        if args.output_filename:
-            # Use user-specified filename
-            output_filename = args.output_filename
-            # Add .json extension if not present
-            if not output_filename.endswith('.json'):
-                output_filename += '.json'
-        elif args.base_model:
-            # For base model, include model name in filename
-            # Convert model path to safe filename: "Qwen/Qwen2.5-VL-7B" -> "Qwen_Qwen2.5_VL_7B"
-            model_name = args.reasoner_model.replace("/", "_").replace("-", "_").replace(".", "_")
-            output_filename = f"answer_{model_name}.json"
-        else:
-            # For trained model, use default filename
-            output_filename = "answer.json"
-        
-        output_file = os.path.join(args.output_dir, output_filename)
-        with open(output_file, 'w', encoding='utf-8') as f:
-            # Write each result with indent
-            for result in all_results:
-                f.write(json.dumps(result, indent=2, ensure_ascii=False) + '\n')
-            
-            # Write final summary at the end
-            summary = {
-                "summary": {
-                    "total_samples": total_count,
-                    "correct": correct_count,
-                    "accuracy": accuracy,
-                    "augment_config": augment_info
-                }
+        accuracy = (correct_count / total_count) if total_count > 0 else 0.0
+        summary = {
+            "summary": {
+                "total_samples": total_count,
+                "correct": correct_count,
+                "accuracy": accuracy,
+                "augment_config": augment_info
             }
-            f.write(json.dumps(summary, indent=2, ensure_ascii=False) + '\n')
-        
-        logging.info("="*80)
-        logging.info("Evaluation completed!")
-        logging.info(f"Total samples: {total_count}")
-        logging.info(f"Correct: {correct_count}")
-        logging.info(f"Accuracy: {accuracy:.4f} ({correct_count}/{total_count})")
-        logging.info(f"Results saved to: {output_file}")
-        logging.info("="*80)
-        
+        }
+        # Close samples temp file before assembling final output
+        f_samples.flush()
+        f_samples.close()
+        # Write summary first, then append all sample lines
+        with open(output_file, 'w', encoding='utf-8') as f_final:
+            f_final.write(json.dumps(summary, indent=2, ensure_ascii=False) + '\n')
+            with open(samples_file, 'r', encoding='utf-8') as f_in:
+                for line in f_in:
+                    f_final.write(line)
+            f_final.flush()
+        # Cleanup temp samples file
+        try:
+            os.remove(samples_file)
+        except OSError:
+            pass
         return {"accuracy": accuracy}
     else:
         return {}
 
 
 if __name__ == "__main__":
+    # Avoid HuggingFace tokenizers parallelism + fork issues
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+    # Use spawn to avoid forking after tokenizers usage
+    try:
+        mp.set_start_method("spawn", force=True)
+    except RuntimeError:
+        pass
     args = parse_args()
     evaluate(args)

@@ -40,7 +40,7 @@ def log_function_call(func):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         func_name = func.__name__
-        # logging.info(f"\033[94m[CALL] {func_name}\033[0m") # blue color
+        logging.info(f"\033[94m[CALL] {func_name}\033[0m") # blue color
         return func(*args, **kwargs)
     return wrapper
 
@@ -468,7 +468,9 @@ class LatentMemoryModel(BaseModel):
         # logging.info(f"augmentation_indices: {augmentation_indices}")
         
         # origin inputs embeds (use fused embeddings when image inputs are provided)
+        # logging.info(f"[FORWARD] input readable: {tokens_to_readable(input_ids[0].tolist(), tokenizer)}")
         if pixel_values is not None:
+            logging.info(f"[FORWARD] pixel_values: {pixel_values.shape}")
             with torch.no_grad():
                 seed_outputs = reasoner(
                     input_ids=input_ids,
@@ -480,6 +482,7 @@ class LatentMemoryModel(BaseModel):
                 )
             inputs_embeds = seed_outputs.hidden_states[0]
         else:
+            logging.info(f"[FORWARD] no pixel values")
             inputs_embeds = reasoner.get_input_embeddings()(input_ids)
         
         # Initialize the start index and empty tensors for accumulating processed segments
@@ -720,6 +723,14 @@ class LatentMemoryModel(BaseModel):
         image_grid_thw: Optional[Tuple[int, int, int]] = None,
         **kwargs
     ):  
+        # log all the input kwargs
+        logging.info(f"[FORWARD] input_ids: {input_ids.shape}")
+        logging.info(f"[FORWARD] attention_mask: {attention_mask.shape}")
+        logging.info(f"[FORWARD] labels: {labels.shape}")
+        logging.info(f"[FORWARD] pixel_values: {pixel_values.shape}")
+        logging.info(f"[FORWARD] image_grid_thw: {image_grid_thw.shape}")
+        logging.info(f"[FORWARD] kwargs: {kwargs}")
+        
         tokenizer = self.tokenizer
 
         # Ensure labels are provided, required for training the reasoning processor
@@ -779,6 +790,7 @@ class LatentMemoryModel(BaseModel):
                 # logging.info("[SFT DEBUG] range#%d %d:%d -> %s", ridx + 1, s, e, seg_dump)
 
             # Call the appropriate forward function (instruction or conversation)
+            logging.info(f"[FORWARD] forward_func: pixel_values: {pixel_values is not None}")
             batch_logits, batch_supervised_labels = forward_func( # forward_func --> _forward
                 input_ids=batch_input_ids,
                 attention_mask=batch_attention_mask,

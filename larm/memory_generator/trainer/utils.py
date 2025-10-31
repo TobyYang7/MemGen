@@ -167,9 +167,9 @@ def tokens_to_readable(token_ids: List[int], processing_class) -> str:
         if consecutive_count > 0 and prev_tid is not None:
             try:
                 prev_str = _tok.decode([prev_tid], skip_special_tokens=False)
-                items.append(f"{GREEN}[IMG]{prev_str.strip()}[/IMG]{RESET}×{consecutive_count + 1}")
+                items.append(f"{GREEN}{prev_str.strip()}{RESET}×{consecutive_count + 1}")
             except Exception:
-                items.append(f"{GREEN}[IMG]<img_pad>[/IMG]{RESET}×{consecutive_count + 1}")
+                items.append(f"{GREEN}<img_pad>{RESET}×{consecutive_count + 1}")
             consecutive_count = 0
 
     for tid in token_ids:
@@ -189,7 +189,7 @@ def tokens_to_readable(token_ids: List[int], processing_class) -> str:
                         consecutive_count = 0
                         continue
                     else:
-                        items.append(f"{GREEN}[IMG]{token_str.strip()}[/IMG]{RESET}")
+                        items.append(f"{GREEN}{token_str.strip()}{RESET}")
                 elif hasattr(_tok, 'pad_token_id') and tid == _tok.pad_token_id:
                     items.append("<|pad|>")
                 elif hasattr(_tok, 'eos_token_id') and tid == _tok.eos_token_id:

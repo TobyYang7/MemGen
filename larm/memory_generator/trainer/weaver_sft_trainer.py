@@ -1,5 +1,5 @@
 import logging
-from typing import Optional, Union, Any
+from typing import Optional, Union, Any, List, Dict
 
 import torch
 from datasets import Dataset, IterableDataset
@@ -10,6 +10,137 @@ from .utils import (
     init_sft_log_files,
     persist_sft_logs,
 )
+
+
+class VisionAwareDataCollatorForMemgen:
+    """Pad and batch text tensors and optionally stack vision tensors.
+
+    - Pads `input_ids` with pad_token_id, `attention_mask` with 0, `labels` with -100.
+    - If every example has non-None `pixel_values`, stacks to (B, C, H, W);
+      otherwise omits the key to avoid mixing modalities in one batch.
+    - If every example has non-None `image_grid_thw`, stacks to (B, 3) or (B, ...).
+    """
+
+    def __init__(self, pad_token_id: int, processor: Optional[ProcessorMixin] = None) -> None:
+        self.pad_token_id = int(pad_token_id)
+        self.processor = processor
+
+    def __call__(self, examples: List[Dict[str, Any]]) -> Dict[str, Any]:
+        # Input IDs
+        ids_list = [ex["input_ids"] for ex in examples]
+        ids_list = [t if isinstance(t, torch.Tensor) else torch.tensor(t, dtype=torch.long) for t in ids_list]
+        input_ids = torch.nn.utils.rnn.pad_sequence(ids_list, batch_first=True, padding_value=self.pad_token_id)
+
+        # Attention mask (fallback to ones if missing)
+        if "attention_mask" in examples[0]:
+            mask_list = [ex["attention_mask"] for ex in examples]
+            mask_list = [t if isinstance(t, torch.Tensor) else torch.tensor(t, dtype=torch.long) for t in mask_list]
+        else:
+            mask_list = [torch.ones_like(t, dtype=torch.long) for t in ids_list]
+        attention_mask = torch.nn.utils.rnn.pad_sequence(mask_list, batch_first=True, padding_value=0)
+
+        # Labels
+        labels_list = [ex["labels"] for ex in examples]
+        labels_list = [t if isinstance(t, torch.Tensor) else torch.tensor(t, dtype=torch.long) for t in labels_list]
+        labels = torch.nn.utils.rnn.pad_sequence(labels_list, batch_first=True, padding_value=-100)
+
+        batch: Dict[str, Any] = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "labels": labels,
+        }
+
+        # Vision tensors - prefer recomputing via processor to ensure correct shapes
+        try:
+            # Case 1: recompute from image_path if processor is available and all examples have images
+            if self.processor is not None:
+                paths = [ex.get("image_path", None) for ex in examples]
+                if all(p is not None for p in paths):
+                    from PIL import Image
+                    imgs = []
+                    for p in paths:
+                        try:
+                            with Image.open(p) as im:
+                                imgs.append(im.convert("RGB"))
+                        except Exception:
+                            imgs.append(None)
+                    if all(img is not None for img in imgs):
+                        proc_out = self.processor(
+                            images=imgs,
+                            text=[""] * len(imgs),  # text is unused; included for processor API compatibility
+                            return_tensors="pt",
+                            padding=True,
+                        )
+                        if "pixel_values" in proc_out:
+                            pv = proc_out["pixel_values"]
+                            # Ensure batch-major shape for features: (B, T, D)
+                            if isinstance(pv, torch.Tensor) and pv.ndim == 2:
+                                try:
+                                    B = len(imgs)
+                                    total_T = pv.size(0)
+                                    D = pv.size(1)
+                                    if B > 0 and total_T % B == 0:
+                                        T = total_T // B
+                                        pv = pv.view(B, T, D)
+                                except Exception:
+                                    pass
+                            batch["pixel_values"] = pv
+                        if "image_grid_thw" in proc_out:
+                            batch["image_grid_thw"] = proc_out["image_grid_thw"]
+                        return batch
+
+            # Case 2: fall back to stacking precomputed tensors when shapes are consistent and >=3D
+            all_have_pixels = all(("pixel_values" in ex and isinstance(ex["pixel_values"], torch.Tensor)) for ex in examples)
+            if all_have_pixels:
+                pix_list = [ex["pixel_values"] for ex in examples]
+                # Case 2a: features already computed per-sample with shape (T, D);
+                # stack to (B, T, D) if all T and D match
+                if all(getattr(t, "ndim", 0) == 2 for t in pix_list):
+                    try:
+                        t_lens = [t.size(0) for t in pix_list]
+                        d_dims = [t.size(1) for t in pix_list]
+                        if len(set(t_lens)) == 1 and len(set(d_dims)) == 1:
+                            base_dtype = pix_list[0].dtype
+                            norm_list = [t.to(dtype=base_dtype) if isinstance(t, torch.Tensor) else torch.as_tensor(t, dtype=base_dtype) for t in pix_list]
+                            batch["pixel_values"] = torch.stack(norm_list, dim=0)
+                    except Exception:
+                        pass
+                else:
+                    # Case 2b: raw images as (C,H,W) or (1,C,H,W) tensors; normalize to (B,C,H,W)
+                    norm_list = []
+                    base_dtype = None
+                    for t in pix_list:
+                        if not isinstance(t, torch.Tensor):
+                            t = torch.as_tensor(t)
+                        if t.ndim == 4 and t.size(0) == 1:
+                            t = t.squeeze(0)
+                        norm_list.append(t)
+                        if base_dtype is None:
+                            base_dtype = t.dtype
+                    # Try aligning dtypes
+                    try:
+                        norm_list = [tt.to(dtype=base_dtype) for tt in norm_list]
+                    except Exception:
+                        pass
+                    if all(getattr(t, "ndim", 0) == 3 for t in norm_list):
+                        try:
+                            batch["pixel_values"] = torch.stack(norm_list, dim=0)
+                        except Exception:
+                            pass
+
+            all_have_grid = all(("image_grid_thw" in ex and ex["image_grid_thw"] is not None) for ex in examples)
+            if all_have_grid:
+                grid_list = [ex["image_grid_thw"] for ex in examples]
+                grid_list = [t if isinstance(t, torch.Tensor) else torch.tensor(t) for t in grid_list]
+                try:
+                    batch["image_grid_thw"] = torch.stack(grid_list, dim=0)
+                except Exception:
+                    pass
+        except Exception:
+            # Silently skip vision fields on failure, keeping text-only training running
+            pass
+
+        return batch
 
 
 class WeaverSFTTrainer(SFTTrainer):
@@ -52,6 +183,9 @@ class WeaverSFTTrainer(SFTTrainer):
         try:
             if not self.accelerator.is_main_process:
                 return
+            
+            # todo: log the inputs
+            logging.info(f"\033[94m[SFT DEBUG _log_sft_batch] inputs: {inputs.keys()}\033[0m")
 
             input_ids = inputs.get("input_ids")
             labels = inputs.get("labels")
@@ -187,6 +321,8 @@ class WeaverSFTTrainer(SFTTrainer):
             logging.warning(f"Failed to log SFT batch: {e}")
 
     def training_step(self, model, inputs, num_items_in_batch: int | None = None):
+        logging.info(f"\033[94m[SFT DEBUG training_step] inputs: {inputs.keys()}\033[0m")
+        logging.info(f"\033[94m[SFT DEBUG training_step] num_items_in_batch: {num_items_in_batch}\033[0m")
         loss = super().training_step(model, inputs, num_items_in_batch)
         self._log_sft_batch(inputs, mode="train")
         return loss

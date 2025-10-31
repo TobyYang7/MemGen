@@ -21,7 +21,7 @@ from larm.data.interactions.base_interaction import (
 
 from .memgen_model import LatentMemoryModel
 from .trainer.weaver_grpo_trainer import WeaverGRPOTrainer
-from .trainer.weaver_sft_trainer import WeaverSFTTrainer
+from .trainer.weaver_sft_trainer import WeaverSFTTrainer, VisionAwareDataCollatorForMemgen
 from .trainer.trigger_grpo_trainer import TriggerGRPOTrainer
 from .utils import (
     fix_model_parameters,
@@ -32,6 +32,18 @@ from .utils import (
 )
 from PIL import Image
 import torch
+
+# Decorator to log function calls in blue
+import functools
+
+def log_function_call(func):
+    """Decorator to log function calls with blue color."""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        func_name = func.__name__
+        logging.info(f"\033[94m[CALL RUNNER] {func_name}\033[0m")  # blue color
+        return func(*args, **kwargs)
+    return wrapper
 
 
 @registry.register_runner("latmem")
@@ -150,6 +162,7 @@ class LatentMemoryRunner(BaseRunner):
 
         return dataset
 
+    @log_function_call
     def _prepare_mm_features(self, dataset: Dataset) -> Dataset:
         processor = self.processing_class  # AutoProcessor for VL models
         tokenizer = getattr(processor, "tokenizer", processor)
@@ -175,200 +188,235 @@ class LatentMemoryRunner(BaseRunner):
         # logging.info(f"[MM_Features] Vision token IDs: start={vision_start_ids}, end={vision_end_ids}")
         # logging.info(f"[MM_Features] Tokenizer special tokens: {tokenizer.special_tokens_map}")
 
-        def _encode(example: Dict) -> Dict:
-            prompt = example.get("prompt")
-            completion = example.get("completion")
-            image_path = example.get("image_path")
+        # Create a serializable encoder class to avoid hashing warnings
+        class MMFeatureEncoder:
+            """Serializable encoder for multimodal features to avoid pickle warnings."""
+            def __init__(self, processor, tokenizer, vision_start_ids, vision_end_ids, max_start_len, max_resp_len):
+                self.processor = processor
+                self.tokenizer = tokenizer
+                self.vision_start_ids = vision_start_ids
+                self.vision_end_ids = vision_end_ids
+                self.max_start_len = max_start_len
+                self.max_resp_len = max_resp_len
+                # Track logging counts as class attributes
+                self._path_logged_count = 0
+                self._template_logged_count = 0
+                self._enc_with_img_logged_count = 0
+                self._debug_token_ids_logged = 0
 
-            image = None
-            # Debug: log only one image path candidate and its existence
-            try:
-                _path_logged = getattr(_encode, "_path_logged_count", 0)
-            except Exception:
-                _path_logged = 0
-            if _path_logged < 1:
-                exists_str = os.path.exists(image_path) if image_path is not None else "N/A"
-                logging.info(f"[MM_Features] example image_path: {image_path}, exists={exists_str}")
-                try:
-                    _encode._path_logged_count = _path_logged + 1
-                except Exception:
-                    pass
-            if image_path is not None and os.path.exists(image_path):
-                try:
-                    image = Image.open(image_path).convert("RGB")
-                except Exception:
-                    image = None
+            def __call__(self, example: Dict) -> Dict:
+                return self._encode(example)
 
-            if image is not None:
-                # Use Qwen2.5-VL's recommended message format
-                # Build messages with image and text following official API
-                from larm.memory_generator.utils import THINK_SYS_PROMPT
-                messages = [
-                    {
-                        "role": "system",
-                        "content": THINK_SYS_PROMPT
-                    },
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "image", "image": image},
-                            {"type": "text", "text": prompt},
-                        ],
-                    }
-                ]
-                # Apply chat template first to insert vision tokens
-                text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
-                # Debug: log formatted text (once)
-                try:
-                    _template_logged = getattr(_encode, "_template_logged_count", 0)
-                except Exception:
-                    _template_logged = 0
-                if _template_logged < 1:
-                    logging.info(f"[MM_Features] Formatted text after apply_chat_template: {text[:200]}...")
+            def _encode(self, example: Dict) -> Dict:
+                prompt = example.get("prompt")
+                completion = example.get("completion")
+                image_path = example.get("image_path")
+
+                image = None
+                # Debug: log only one image path candidate and its existence
+                if self._path_logged_count < 1:
+                    exists_str = os.path.exists(image_path) if image_path is not None else "N/A"
+                    logging.info(f"[MM_Features] example image_path: {image_path}, exists={exists_str}")
+                    self._path_logged_count += 1
+                if image_path is not None and os.path.exists(image_path):
                     try:
-                        _encode._template_logged_count = _template_logged + 1
+                        image = Image.open(image_path).convert("RGB")
                     except Exception:
-                        pass
-                # Then process with image
-                enc_prompt = processor(text=[text], images=[image], return_tensors="pt", padding=False)
-                # Debug: confirm (log once) that we are encoding with image
-                try:
-                    _enc_logged = getattr(_encode, "_enc_with_img_logged_count", 0)
-                except Exception:
-                    _enc_logged = 0
-                if _enc_logged < 1:
-                    logging.info(f"[MM_Features] encoding with image: path={image_path}, size={getattr(image, 'size', None)}")
-                    logging.info(f"[MM_Features] enc_prompt keys: {list(enc_prompt.keys())}")
-                    # Check what processor returns
-                    for key, val in enc_prompt.items():
-                        if isinstance(val, torch.Tensor):
-                            logging.info(f"  {key}: Tensor{tuple(val.shape)}")
-                        else:
-                            logging.info(f"  {key}: {type(val)}")
-                    try:
-                        _encode._enc_with_img_logged_count = _enc_logged + 1
-                    except Exception:
-                        pass
-                prompt_ids = enc_prompt["input_ids"][0]
-                prompt_mask = enc_prompt["attention_mask"][0]
-                pixel_values = enc_prompt.get("pixel_values")
-                image_grid_thw = enc_prompt.get("image_grid_thw")
+                        image = None
+
+                if image is not None:
+                    # Use Qwen2.5-VL's recommended message format
+                    # Build messages with image and text following official API
+                    from larm.memory_generator.utils import THINK_SYS_PROMPT
+                    messages = [
+                        {
+                            "role": "system",
+                            "content": THINK_SYS_PROMPT
+                        },
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "image", "image": image},
+                                {"type": "text", "text": prompt},
+                            ],
+                        }
+                    ]
+                    # Apply chat template first to insert vision tokens
+                    text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+                    # Debug: log formatted text (once)
+                    if self._template_logged_count < 1:
+                        logging.info(f"[MM_Features] Formatted text after apply_chat_template: {text[:200]}...")
+                        self._template_logged_count += 1
+                    # Then process with image
+                    enc_prompt = self.processor(text=[text], images=[image], return_tensors="pt", padding=False)
+                    # Debug: confirm (log once) that we are encoding with image
+                    if self._enc_with_img_logged_count < 1:
+                        logging.info(f"[MM_Features] encoding with image: path={image_path}, size={getattr(image, 'size', None)}")
+                        logging.info(f"[MM_Features] enc_prompt keys: {list(enc_prompt.keys())}")
+                        # Check what processor returns
+                        for key, val in enc_prompt.items():
+                            if isinstance(val, torch.Tensor):
+                                logging.info(f"  {key}: Tensor{tuple(val.shape)}")
+                            else:
+                                logging.info(f"  {key}: {type(val)}")
+                        self._enc_with_img_logged_count += 1
+                    prompt_ids = enc_prompt["input_ids"][0]
+                    prompt_mask = enc_prompt["attention_mask"][0]
+                    pixel_values = enc_prompt.get("pixel_values")
+                    image_grid_thw = enc_prompt.get("image_grid_thw")
+                    if pixel_values is not None:
+                        pixel_values = pixel_values[0]
+                    if image_grid_thw is not None:
+                        image_grid_thw = image_grid_thw[0]
+                else:
+                    enc_prompt = self.processor(text=[prompt], return_tensors="pt", padding=False)
+                    prompt_ids = enc_prompt["input_ids"][0]
+                    prompt_mask = enc_prompt["attention_mask"][0]
+                    pixel_values = None
+                    image_grid_thw = None
+
+                enc_comp = self.tokenizer(text=[completion], add_special_tokens=False, return_tensors="pt")
+                comp_ids = enc_comp["input_ids"][0]
+
+                # ===== Enforce per-part budgets =====
+                # 1) Clip completion (B) length to max_resp_len (right-side clip)
+                if self.max_resp_len is not None and comp_ids.numel() > self.max_resp_len:
+                    comp_ids = comp_ids[:self.max_resp_len]
+
+                # 2) Clip prompt (A) length to max_start_len, but NEVER cut through image placeholder span
+                if self.max_start_len is not None and prompt_ids.numel() > self.max_start_len:
+                    keep_len = int(self.max_start_len)
+                    total_len = int(prompt_ids.numel())
+                    # Default tail slice
+                    slice_end = total_len
+                    slice_start = total_len - keep_len
+
+                    # If image present, try to preserve full placeholder block
+                    if image is not None:
+                        ids_list_full = prompt_ids.tolist()
+
+                        # Find vision span using known start/end markers if available
+                        def find_subseq(seq, sub):
+                            n, m = len(seq), len(sub)
+                            for i in range(0, n - m + 1):
+                                if seq[i:i+m] == sub:
+                                    return i
+                            return -1
+
+                        s_idx = find_subseq(ids_list_full, self.vision_start_ids) if len(self.vision_start_ids) > 0 else -1
+                        e_idx = find_subseq(ids_list_full, self.vision_end_ids) if len(self.vision_end_ids) > 0 else -1
+
+                        # Fallback: treat any <|vision_pad|>/<|image_pad|> tokens as the span
+                        if s_idx == -1 or e_idx == -1:
+                            pad_ids = []
+                            vp = self.tokenizer.encode("<|vision_pad|>", add_special_tokens=False)
+                            ip = self.tokenizer.encode("<|image_pad|>", add_special_tokens=False)
+                            if len(vp) > 0: pad_ids.append(vp[0])
+                            if len(ip) > 0: pad_ids.append(ip[0])
+                            if len(pad_ids) > 0:
+                                indices = [i for i, t in enumerate(ids_list_full) if t in pad_ids]
+                                if len(indices) > 0:
+                                    s_idx, e_idx = indices[0], indices[-1]
+
+                        # If we detected a span, adjust slice to include it fully
+                        if s_idx != -1 and e_idx != -1 and e_idx >= s_idx:
+                            # Ensure [s_idx, e_idx] is inside [slice_start, slice_end)
+                            slice_end = max(slice_end, e_idx + 1)
+                            slice_end = min(slice_end, total_len)
+                            slice_start = max(0, min(s_idx, slice_end - keep_len))
+                            # Recompute start if end moved
+                            if slice_end - slice_start > keep_len:
+                                slice_start = slice_end - keep_len
+
+                    prompt_ids = prompt_ids[slice_start:slice_end]
+                    if prompt_mask is not None and prompt_mask.numel() == enc_prompt["attention_mask"][0].numel():
+                        prompt_mask = prompt_mask[slice_start:slice_end]
+
+                input_ids = torch.cat([prompt_ids, comp_ids], dim=0)
+                attention_mask = torch.cat([prompt_mask, torch.ones_like(comp_ids)], dim=0)
+                # labels supervise only on B (up to max_resp_len)
+                labels = torch.cat([torch.full_like(prompt_ids, -100), comp_ids.clone()], dim=0)
+
+                # For Qwen2.5-VL: image tokens are NOT explicitly in input_ids
+                # Instead, the model uses image_grid_thw to locate image features
+                # So image_token_mask may remain all False, which is correct
+                image_token_mask = torch.zeros_like(input_ids, dtype=torch.bool)
+                if image is not None:
+                    ids_list = prompt_ids.tolist()
+
+                    # Debug: log first example's token ids
+                    if self._debug_token_ids_logged < 1:
+                        logging.info(f"[MM_Features] Sample prompt_ids (first 50): {ids_list[:50]}")
+                        logging.info(f"[MM_Features] Looking for vision_start_ids: {self.vision_start_ids}, vision_end_ids: {self.vision_end_ids}")
+                        # Decode to show tokens
+                        decoded_tokens = [self.tokenizer.decode([tid]) for tid in ids_list[:50]]
+                        logging.info(f"[MM_Features] Decoded tokens (first 50): {decoded_tokens}")
+                        self._debug_token_ids_logged = 1
+
+                    # For Qwen2.5-VL: check for <|vision_pad|> or <|image_pad|> tokens
+                    vision_pad_id = self.tokenizer.encode("<|vision_pad|>", add_special_tokens=False)
+                    image_pad_id = self.tokenizer.encode("<|image_pad|>", add_special_tokens=False)
+
+                    if self._debug_token_ids_logged < 1:
+                        logging.info(f"[MM_Features] vision_pad_id: {vision_pad_id}, image_pad_id: {image_pad_id}")
+
+                    # Look for vision/image pad tokens in the sequence
+                    target_ids = []
+                    if len(vision_pad_id) > 0:
+                        target_ids.append(vision_pad_id[0])
+                    if len(image_pad_id) > 0:
+                        target_ids.append(image_pad_id[0])
+
+                    if len(target_ids) > 0:
+                        # Mark all positions with vision_pad or image_pad tokens
+                        for i, token_id in enumerate(ids_list):
+                            if token_id in target_ids:
+                                image_token_mask[i] = True
+
+                        if self._debug_token_ids_logged < 1:
+                            num_marked = image_token_mask[:len(ids_list)].sum().item()
+                            logging.info(f"[MM_Features] Marked {num_marked} image pad tokens (ids={target_ids})")
+
+                    # Also try vision_start/vision_end markers
+                    def find_subseq(seq, sub):
+                        n, m = len(seq), len(sub)
+                        for i in range(0, n - m + 1):
+                            if seq[i:i+m] == sub:
+                                return i
+                        return -1
+
+                    s_idx = find_subseq(ids_list, self.vision_start_ids) if len(self.vision_start_ids) > 0 else -1
+                    e_idx = find_subseq(ids_list, self.vision_end_ids) if len(self.vision_end_ids) > 0 else -1
+
+                    if self._debug_token_ids_logged < 1:
+                        logging.info(f"[MM_Features] Found indices: start_idx={s_idx}, end_idx={e_idx}")
+
+                    if s_idx != -1 and e_idx != -1 and e_idx >= s_idx:
+                        image_token_mask[s_idx:e_idx+len(self.vision_end_ids)] = True
+                        if self._debug_token_ids_logged < 1:
+                            num_marked = image_token_mask.sum().item()
+                            logging.info(f"[MM_Features] Set image_token_mask[{s_idx}:{e_idx+len(self.vision_end_ids)}] = True (total marked: {num_marked})")
+
+                    # Final check
+                    if self._debug_token_ids_logged < 1:
+                        total_marked = image_token_mask.sum().item()
+                        if total_marked == 0:
+                            logging.warning(f"[MM_Features] Image present but no vision tokens found in input_ids! This may be expected for Qwen2.5-VL.")
+
+                out = {
+                    "input_ids": input_ids,
+                    "attention_mask": attention_mask,
+                    "labels": labels,
+                    "image_token_mask": image_token_mask,
+                }
                 if pixel_values is not None:
-                    pixel_values = pixel_values[0]
+                    out["pixel_values"] = pixel_values
                 if image_grid_thw is not None:
-                    image_grid_thw = image_grid_thw[0]
-            else:
-                enc_prompt = processor(text=[prompt], return_tensors="pt", padding=False)
-                prompt_ids = enc_prompt["input_ids"][0]
-                prompt_mask = enc_prompt["attention_mask"][0]
-                pixel_values = None
-                image_grid_thw = None
+                    out["image_grid_thw"] = image_grid_thw
+                return out
 
-            tokenizer = getattr(processor, "tokenizer", processor)
-            enc_comp = tokenizer(text=[completion], add_special_tokens=False, return_tensors="pt")
-            comp_ids = enc_comp["input_ids"][0]
-
-            # ===== Enforce per-part budgets =====
-            # 1) Clip completion (B) length to max_resp_len (right-side clip)
-            if max_resp_len is not None and comp_ids.numel() > max_resp_len:
-                comp_ids = comp_ids[:max_resp_len]
-
-            # 2) Clip prompt (A) length to max_start_len (left-side clip to keep the tail with vision/user tokens)
-            if max_start_len is not None and prompt_ids.numel() > max_start_len:
-                # keep last max_start_len tokens
-                prompt_ids = prompt_ids[-max_start_len:]
-                if prompt_mask is not None and prompt_mask.numel() == enc_prompt["attention_mask"][0].numel():
-                    prompt_mask = prompt_mask[-max_start_len:]
-
-            input_ids = torch.cat([prompt_ids, comp_ids], dim=0)
-            attention_mask = torch.cat([prompt_mask, torch.ones_like(comp_ids)], dim=0)
-            # labels supervise only on B (up to max_resp_len)
-            labels = torch.cat([torch.full_like(prompt_ids, -100), comp_ids.clone()], dim=0)
-
-            # For Qwen2.5-VL: image tokens are NOT explicitly in input_ids
-            # Instead, the model uses image_grid_thw to locate image features
-            # So image_token_mask may remain all False, which is correct
-            image_token_mask = torch.zeros_like(input_ids, dtype=torch.bool)
-            if image is not None:
-                ids_list = prompt_ids.tolist()
-
-                # Debug: log first example's token ids
-                try:
-                    _debug_logged = getattr(_encode, "_debug_token_ids_logged", 0)
-                except Exception:
-                    _debug_logged = 0
-                if _debug_logged < 1:
-                    logging.info(f"[MM_Features] Sample prompt_ids (first 50): {ids_list[:50]}")
-                    logging.info(f"[MM_Features] Looking for vision_start_ids: {vision_start_ids}, vision_end_ids: {vision_end_ids}")
-                    # Decode to show tokens
-                    decoded_tokens = [tokenizer.decode([tid]) for tid in ids_list[:50]]
-                    logging.info(f"[MM_Features] Decoded tokens (first 50): {decoded_tokens}")
-                    try:
-                        _encode._debug_token_ids_logged = 1
-                    except Exception:
-                        pass
-
-                # For Qwen2.5-VL: check for <|vision_pad|> or <|image_pad|> tokens
-                vision_pad_id = tokenizer.encode("<|vision_pad|>", add_special_tokens=False)
-                image_pad_id = tokenizer.encode("<|image_pad|>", add_special_tokens=False)
-
-                if _debug_logged < 1:
-                    logging.info(f"[MM_Features] vision_pad_id: {vision_pad_id}, image_pad_id: {image_pad_id}")
-
-                # Look for vision/image pad tokens in the sequence
-                target_ids = []
-                if len(vision_pad_id) > 0:
-                    target_ids.append(vision_pad_id[0])
-                if len(image_pad_id) > 0:
-                    target_ids.append(image_pad_id[0])
-
-                if len(target_ids) > 0:
-                    # Mark all positions with vision_pad or image_pad tokens
-                    for i, token_id in enumerate(ids_list):
-                        if token_id in target_ids:
-                            image_token_mask[i] = True
-
-                    if _debug_logged < 1:
-                        num_marked = image_token_mask[:len(ids_list)].sum().item()
-                        logging.info(f"[MM_Features] Marked {num_marked} image pad tokens (ids={target_ids})")
-
-                # Also try vision_start/vision_end markers
-                def find_subseq(seq, sub):
-                    n, m = len(seq), len(sub)
-                    for i in range(0, n - m + 1):
-                        if seq[i:i+m] == sub:
-                            return i
-                    return -1
-
-                s_idx = find_subseq(ids_list, vision_start_ids) if len(vision_start_ids) > 0 else -1
-                e_idx = find_subseq(ids_list, vision_end_ids) if len(vision_end_ids) > 0 else -1
-
-                if _debug_logged < 1:
-                    logging.info(f"[MM_Features] Found indices: start_idx={s_idx}, end_idx={e_idx}")
-
-                if s_idx != -1 and e_idx != -1 and e_idx >= s_idx:
-                    image_token_mask[s_idx:e_idx+len(vision_end_ids)] = True
-                    if _debug_logged < 1:
-                        num_marked = image_token_mask.sum().item()
-                        logging.info(f"[MM_Features] Set image_token_mask[{s_idx}:{e_idx+len(vision_end_ids)}] = True (total marked: {num_marked})")
-
-                # Final check
-                if _debug_logged < 1:
-                    total_marked = image_token_mask.sum().item()
-                    if total_marked == 0:
-                        logging.warning(f"[MM_Features] Image present but no vision tokens found in input_ids! This may be expected for Qwen2.5-VL.")
-
-            out = {
-                "input_ids": input_ids,
-                "attention_mask": attention_mask,
-                "labels": labels,
-                "image_token_mask": image_token_mask,
-            }
-            if pixel_values is not None:
-                out["pixel_values"] = pixel_values
-            if image_grid_thw is not None:
-                out["image_grid_thw"] = image_grid_thw
-            return out
+        # Create encoder instance
+        encoder = MMFeatureEncoder(processor, tokenizer, vision_start_ids, vision_end_ids, max_start_len, max_resp_len)
 
         # Disable multiprocessing to avoid subprocess crashes with PIL/Processor
         # num_proc=None means no multiprocessing (runs in main process)
@@ -379,7 +427,7 @@ class LatentMemoryRunner(BaseRunner):
             columns_to_remove = [c for c in dataset.column_names if c not in ("prompt", "completion", "solution", "image_path")]
 
         dataset = dataset.map(
-            _encode,
+            encoder,
             remove_columns=columns_to_remove,
             num_proc=None,  # Disable multiprocessing to avoid crashes
             load_from_cache_file=False,  # Disable cache due to closure serialization issues
@@ -566,12 +614,30 @@ class LatentMemoryRunner(BaseRunner):
         # SFT Trainer
         if self.train_weaver_method == "sft":
             # JSONL log path under save_dir
+
+            # Print one training example before creating the trainer
+            try:
+                if len(self.weaver_train_dataset) > 0:
+                    ex = self.weaver_train_dataset[0]
+                    logging.info("\033[94m[Train Example][Weaver SFT] keys: %s\033[0m", list(ex.keys()))
+                    
+            except Exception as e:
+                logging.warning("\033[94m[Train Example][Weaver SFT] Failed to print example: %s\033[0m", e)
+
+            # Build a vision-aware data collator so pixel_values/image_grid_thw are preserved
+            _tok = getattr(self.processing_class, 'tokenizer', self.processing_class)
+            _pad_id = getattr(_tok, 'pad_token_id', None)
+            if _pad_id is None:
+                _pad_id = getattr(_tok, 'eos_token_id', 0)
+            data_collator = VisionAwareDataCollatorForMemgen(pad_token_id=_pad_id, processor=self.processing_class if hasattr(self.processing_class, "__call__") else None)
+
             weaver_trainer = WeaverSFTTrainer(
                 model=self.model,
                 args=self.weaver_training_args,
                 train_dataset=self.weaver_train_dataset,
                 eval_dataset=self.valid_dataset,
                 processing_class=self.processing_class,
+                data_collator=data_collator,
             )
 
         # GRPO Trainer
@@ -622,8 +688,7 @@ class LatentMemoryRunner(BaseRunner):
         reward_funcs = []
         for reward_name in self.trigger_reward_names:
             reward_funcs.append(self.env_cls.get_reward_func(reward_name))
-
-        # build trainer
+        
         trigger_trainer = TriggerGRPOTrainer(
             model=self.model,
             processing_class=self.processing_class,
